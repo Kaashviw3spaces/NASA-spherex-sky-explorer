@@ -4,7 +4,7 @@ function seededRandom(seed) {
 }
 
 function splatGaussian(buffer, size, cx, cy, amp, sigma) {
-  const r = Math.ceil(sigma * 4.5);
+  const r = Math.ceil(sigma * 4.2);
   const x0 = Math.max(0, Math.floor(cx - r));
   const x1 = Math.min(size - 1, Math.ceil(cx + r));
   const y0 = Math.max(0, Math.floor(cy - r));
@@ -20,37 +20,105 @@ function splatGaussian(buffer, size, cx, cy, amp, sigma) {
   }
 }
 
-export function generateStarfieldBuffer(target, epochIndex, wavelengthUm = 2.2, size = 256) {
+export function generateStarfieldBuffer(target, epochIndex, size = 512) {
   const buffer = new Float32Array(size * size);
   const baseSeed = target.ra * 0.37 + Math.abs(target.dec) * 1.13;
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const n = seededRandom(baseSeed + x * 0.17 + y * 0.91 + epochIndex * 3.1);
-      const grad = (y / size) * 0.05;
-      buffer[y * size + x] = 0.08 + grad + n * 0.045;
+      buffer[y * size + x] = 0.11 + n * 0.03;
     }
   }
 
-  const starCount = 38;
+  const starCount = 42;
   for (let i = 0; i < starCount; i++) {
-    const sx = 18 + seededRandom(baseSeed + i * 3.1) * (size - 36);
-    const sy = 18 + seededRandom(baseSeed + i * 7.7) * (size - 36);
-    const mag = 0.35 + seededRandom(baseSeed + i * 11.3) * 1.6;
-    const sigma = 1.4 + seededRandom(baseSeed + i * 5.9) * 1.3;
-    const bandMod = 0.8 + 0.35 * Math.cos((wavelengthUm - 1.5) * 0.8 + i);
-    splatGaussian(buffer, size, sx, sy, mag * bandMod, sigma);
+    const sx = 28 + seededRandom(baseSeed + i * 3.1) * (size - 56);
+    const sy = 28 + seededRandom(baseSeed + i * 7.7) * (size - 56);
+    const mag = 0.35 + seededRandom(baseSeed + i * 11.3) * 1.35;
+    const sigma = 2.2 + seededRandom(baseSeed + i * 5.9) * 1.6;
+    splatGaussian(buffer, size, sx, sy, mag, sigma);
   }
 
-  const cx = size * 0.5 + (epochIndex - 1.5) * target.motionDxPerEpoch;
-  const cy = size * 0.5 + (epochIndex - 1.5) * target.motionDyPerEpoch;
-  const varMod = 1 + Math.sin(epochIndex * 1.55) * target.variabilityAmp;
-  const iceAtten =
-    1 - target.iceDepth.h2o * 0.45 * Math.exp(-Math.pow((wavelengthUm - 3.05) / 0.25, 2));
-  const targetFlux = 2.6 * varMod * Math.max(0.35, iceAtten);
-  splatGaussian(buffer, size, cx, cy, targetFlux, 2.2);
+  const cx = size * 0.5 + (epochIndex - 1) * (target.motionDxPerEpoch || -8.0);
+  const cy = size * 0.5 + (epochIndex - 1) * (target.motionDyPerEpoch || 5.0);
+  const varMod = 1 + Math.sin(epochIndex * 1.55) * (target.variabilityAmp || 0.08);
+  splatGaussian(buffer, size, cx, cy, 1.85 * varMod, 5.5);
+  splatGaussian(buffer, size, cx, cy, 0.65 * varMod, 14.0);
 
   return { buffer, size, targetX: cx, targetY: cy };
+}
+
+/**
+ * Real-time 60fps spectral bandpass modulator.
+ * Modulates the target star core, infrared halo, diffraction spikes, and
+ * hot/cool companion stars based on the exact 102-band SED flux at `wavelengthUm`
+ * so dragging the Bandpass Slice slider produces an immediate, unmistakable visual response.
+ */
+export function applyBandpassModulation(
+  baseBuffer,
+  size,
+  target,
+  epochIndex,
+  wavelengthUm,
+  sedRatio
+) {
+  const out = new Float32Array(baseBuffer);
+  const scale = size / 512;
+
+  // Target position in this epoch
+  const cx = size * 0.5 + (epochIndex - 1) * 10.0 * scale;
+  const cy = size * 0.5 + (epochIndex - 1) * -7.5 * scale;
+
+  // sedRatio is in [0.05, 1.0] (1.0 at 1.65 um peak, ~0.18 at 3.05 um H2O dip)
+  // Compute delta to add/subtract from the base cutout's central star + halo + spikes
+  const deltaCore = (sedRatio - 0.55) * 2.2;
+  const deltaHalo = (sedRatio - 0.55) * 0.95;
+
+  splatGaussian(out, size, cx, cy, deltaCore, 6.0 * scale);
+  splatGaussian(out, size, cx, cy, deltaHalo, 18.0 * scale);
+
+  // Add subtle diffraction spikes at bright continuum wavelengths (sedRatio > 0.45)
+  if (sedRatio > 0.35) {
+    const spikeAmp = (sedRatio - 0.35) * 0.85;
+    const spikeLen = Math.round(48 * scale * sedRatio);
+    for (let d = -spikeLen; d <= spikeLen; d++) {
+      const falloff = Math.exp(-Math.abs(d) / (16 * scale));
+      const xH = Math.round(cx + d);
+      const yH = Math.round(cy);
+      if (xH >= 0 && xH < size && yH >= 0 && yH < size) {
+        out[yH * size + xH] += spikeAmp * falloff;
+        if (yH + 1 < size) out[(yH + 1) * size + xH] += spikeAmp * falloff * 0.45;
+        if (yH - 1 >= 0) out[(yH - 1) * size + xH] += spikeAmp * falloff * 0.45;
+      }
+      const xV = Math.round(cx);
+      const yV = Math.round(cy + d);
+      if (xV >= 0 && xV < size && yV >= 0 && yV < size) {
+        out[yV * size + xV] += spikeAmp * falloff;
+        if (xV + 1 < size) out[yV * size + (xV + 1)] += spikeAmp * falloff * 0.45;
+        if (xV - 1 >= 0) out[yV * size + (xV - 1)] += spikeAmp * falloff * 0.45;
+      }
+    }
+  }
+
+  // Modulate 12 prominent field stars by color temperature (short-IR blue vs long-IR dusty red)
+  const baseSeed = target.ra * 0.37 + Math.abs(target.dec) * 1.13;
+  const normWave = (wavelengthUm - 2.8) / 2.1; // [-1, +1] across 0.75..5.0 um
+  for (let i = 0; i < 12; i++) {
+    const sx = (48 + seededRandom(baseSeed + i * 13.7) * (512 - 96)) * scale;
+    const sy = (48 + seededRandom(baseSeed + i * 29.3) * (512 - 96)) * scale;
+    const isDustyRed = i % 2 === 0;
+    const starDelta = isDustyRed ? normWave * 0.95 : -normWave * 0.95;
+    splatGaussian(out, size, sx, sy, starDelta, 4.2 * scale);
+    splatGaussian(out, size, sx, sy, starDelta * 0.35, 10.5 * scale);
+  }
+
+  // Clamp floor to sky background so negative deltas never create black holes
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] < 0.08) out[i] = 0.08;
+  }
+
+  return out;
 }
 
 export function computeDifferenceBuffer(bufA, bufB) {
@@ -77,40 +145,7 @@ export function computeDifferenceBuffer(bufA, bufB) {
   for (let i = 0; i < n; i++) {
     const zA = (bufA[i] - meanA) / stdA;
     const zB = (bufB[i] - meanB) / stdB;
-    diff[i] = 0.5 + (zA - zB) * 0.14;
+    diff[i] = 1.2 + (zA - zB) * 0.32;
   }
   return diff;
-}
-
-export function applyStretch(val, stretch = 'zscale', gain = 1.0) {
-  const v = Math.max(0, val);
-  if (stretch === 'log') {
-    return Math.min(1, Math.log1p(v * 6 * gain) / Math.log1p(12));
-  }
-  if (stretch === 'asinh') {
-    return Math.min(1, Math.asinh(v * 3.5 * gain) / Math.asinh(9));
-  }
-  const zmin = 0.085;
-  const zmax = 1.45 / Math.max(0.4, gain);
-  return Math.max(0, Math.min(1, (v - zmin) / (zmax - zmin)));
-}
-
-export function mapColormap(t, colormap = 'inferno') {
-  const u = Math.max(0, Math.min(1, t));
-  if (colormap === 'grayscale_r') {
-    const c = Math.round((1 - u) * 242);
-    return [c, c, c];
-  }
-  if (colormap === 'viridis') {
-    const r = Math.round(255 * Math.min(1, Math.max(0, -0.35 + 1.4 * u * u)));
-    const g = Math.round(255 * Math.min(1, Math.max(0, 0.12 + 0.85 * u)));
-    const b = Math.round(255 * Math.min(1, Math.max(0, 0.34 + 0.55 * Math.sin(u * Math.PI))));
-    return [r, g, b];
-  }
-  const r = Math.round(255 * Math.min(1, Math.pow(u, 0.55) * 1.15));
-  const g = Math.round(255 * Math.min(1, Math.pow(u, 1.35) * 0.95));
-  const b = Math.round(
-    255 * Math.min(1, 0.08 + Math.sin(u * Math.PI * 0.9) * 0.42 + Math.pow(u, 3.2) * 0.6)
-  );
-  return [r, g, b];
 }

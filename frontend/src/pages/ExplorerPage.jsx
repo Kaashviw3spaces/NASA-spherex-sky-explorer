@@ -23,6 +23,7 @@ import {
   resolveTargetApi
 } from '../api/client';
 import {
+  applyBandpassModulation,
   computeDifferenceBuffer,
   generateStarfieldBuffer
 } from '../utils/astronomyRenderer';
@@ -64,27 +65,37 @@ export default function ExplorerPage() {
   const [psfLoading, setPsfLoading] = useState(false);
 
   // Spectroscopy & aperture state
-  const [activeWavelength, setActiveWavelength] = useState(2.2);
+  const [activeWavelength, setActiveWavelength] = useState(1.65);
   const [apertureRadius, setApertureRadius] = useState(2);
   const [showLines, setShowLines] = useState(true);
   const [sampleOffset, setSampleOffset] = useState(0);
   const [liveSpectrumBands, setLiveSpectrumBands] = useState(null);
   const [crosshair, setCrosshair] = useState({ x: 256, y: 256 });
+  const [sampleCoords, setSampleCoords] = useState({
+    ra: initialTarget.ra,
+    dec: initialTarget.dec
+  });
   const [copiedLink, setCopiedLink] = useState(false);
   const [showHeaderModal, setShowHeaderModal] = useState(false);
 
   const canvasPrimaryRef = useRef(null);
   const canvasSecondaryRef = useRef(null);
   const workerRef = useRef(null);
+  const overlayRef = useRef({ crosshair, apertureRadius, curtainPos });
 
-  // Initialize Web Worker for off-thread stretching & colormapping
+  useEffect(() => {
+    overlayRef.current = { crosshair, apertureRadius, curtainPos };
+  }, [crosshair, apertureRadius, curtainPos]);
+
+  // Persistent Web Worker created ONCE (never terminated on slider drag)
   useEffect(() => {
     const worker = new Worker(new URL('../workers/rasterWorker.js', import.meta.url), {
       type: 'module'
     });
     worker.onmessage = (e) => {
       const { id, rgba, width, height } = e.data;
-      const targetCanvas = id === 'secondary' ? canvasSecondaryRef.current : canvasPrimaryRef.current;
+      const targetCanvas =
+        id === 'secondary' ? canvasSecondaryRef.current : canvasPrimaryRef.current;
       if (!targetCanvas) return;
       if (targetCanvas.width !== width || targetCanvas.height !== height) {
         targetCanvas.width = width;
@@ -94,28 +105,29 @@ export default function ExplorerPage() {
       const imgData = new ImageData(rgba, width, height);
       ctx.putImageData(imgData, 0, 0);
 
-      // Draw aperture crosshair & swipe divider if active
-      ctx.strokeStyle = 'rgba(232, 141, 58, 0.88)';
-      ctx.lineWidth = 1.4;
-      const scaleFactor = width / 256;
-      const cx = crosshair.x;
-      const cy = crosshair.y;
+      const { crosshair: ch, apertureRadius: ap, curtainPos: cp } = overlayRef.current;
+      const scaleFactor = width / 512;
+      const cx = ch.x;
+      const cy = ch.y;
+
+      ctx.strokeStyle = 'rgba(232, 141, 58, 0.9)';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(cx, cy, (apertureRadius * 5 + 3) * scaleFactor, 0, Math.PI * 2);
+      ctx.arc(cx, cy, (ap * 9 + 6) * scaleFactor, 0, Math.PI * 2);
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(cx - 12, cy);
-      ctx.lineTo(cx - 5, cy);
-      ctx.moveTo(cx + 5, cy);
-      ctx.lineTo(cx + 12, cy);
-      ctx.moveTo(cx, cy - 12);
-      ctx.lineTo(cx, cy - 5);
-      ctx.moveTo(cx, cy + 5);
-      ctx.lineTo(cx, cy + 12);
+      ctx.moveTo(cx - 16, cy);
+      ctx.lineTo(cx - 6, cy);
+      ctx.moveTo(cx + 6, cy);
+      ctx.lineTo(cx + 16, cy);
+      ctx.moveTo(cx, cy - 16);
+      ctx.lineTo(cx, cy - 6);
+      ctx.moveTo(cx, cy + 6);
+      ctx.lineTo(cx, cy + 16);
       ctx.stroke();
 
       if (id === 'swipe') {
-        const splitX = Math.floor(curtainPos * width);
+        const splitX = Math.floor(cp * width);
         ctx.strokeStyle = '#eceae4';
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -126,7 +138,7 @@ export default function ExplorerPage() {
     };
     workerRef.current = worker;
     return () => worker.terminate();
-  }, [crosshair, apertureRadius, curtainPos]);
+  }, []);
 
   // Sync URL query params (Deep Linking)
   useEffect(() => {
@@ -145,38 +157,20 @@ export default function ExplorerPage() {
     );
   }, [target, viewMode, stretch, setSearchParams]);
 
-  // Fetch 408-byte spectrum & progressive 202 cutouts from FastAPI
+  // Fetch base multi-epoch cutouts ONLY when target changes (never clear/flash during slider scrub)
   useEffect(() => {
     const controller = new AbortController();
-    setLiveFrames([]);
     setPsfDiffResult(null);
-    setBackendStatus('connecting');
-
-    const bandIndex = Math.max(1, Math.min(102, Math.round(((activeWavelength - 0.75) / 4.25) * 101) + 1));
-
-    fetchSpectrumApi(target.ra, target.dec, apertureRadius * 6.2)
-      .then((res) => {
-        if (!controller.signal.aborted) {
-          setLiveSpectrumBands(res.bands);
-          setBackendStatus('live');
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setLiveSpectrumBands(null);
-          setBackendStatus('offline');
-        }
-      });
 
     fetchCutoutsWithPolling(
       {
         ra: target.ra,
         dec: target.dec,
         fovArcmin: target.fovArcmin,
-        bands: [bandIndex]
+        bands: [42]
       },
-      (frames) => {
-        if (!controller.signal.aborted) {
+      (frames, isComplete) => {
+        if (!controller.signal.aborted && (isComplete || frames.length >= 3)) {
           setLiveFrames(frames.slice(0, 16));
           setBackendStatus('live');
         }
@@ -189,10 +183,62 @@ export default function ExplorerPage() {
     });
 
     return () => controller.abort();
-  }, [target, apertureRadius, activeWavelength]);
+  }, [target]);
 
-  // Phase-locked blink timer (decoupled from network)
-  const frameCount = liveFrames.length > 0 ? liveFrames.length : target.epochs.length;
+  // Fetch 408-byte spectrum at clicked WCS coordinate (sampleCoords)
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchSpectrumApi(
+      sampleCoords.ra,
+      sampleCoords.dec,
+      apertureRadius * 6.2,
+      target.ra,
+      target.dec,
+      target.fovArcmin
+    )
+      .then((res) => {
+        if (!controller.signal.aborted) {
+          setLiveSpectrumBands(res.bands);
+          setBackendStatus('live');
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setLiveSpectrumBands(null);
+        }
+      });
+    return () => controller.abort();
+  }, [target, sampleCoords, apertureRadius]);
+
+  const fallbackSpectrum = useMemo(
+    () => generateSpectrum(target, apertureRadius, sampleOffset),
+    [target, apertureRadius, sampleOffset]
+  );
+
+  const activeBands = liveSpectrumBands || fallbackSpectrum.bands;
+
+  // Compute normalized SED flux ratio [0.08, 1.0] at activeWavelength
+  const sedRatio = useMemo(() => {
+    if (!activeBands || activeBands.length === 0) return 0.7;
+    let maxF = 0.001;
+    let closest = activeBands[0];
+    for (const b of activeBands) {
+      if (b.flux > maxF) maxF = b.flux;
+      if (Math.abs(b.wavelength - activeWavelength) < Math.abs(closest.wavelength - activeWavelength)) {
+        closest = b;
+      }
+    }
+    return Math.max(0.08, Math.min(1.0, closest.flux / maxF));
+  }, [activeBands, activeWavelength]);
+
+  // Pre-build offline fallback buffers per target so they never flicker
+  const fallbackEpochs = useMemo(() => {
+    return target.epochs.map((_, idx) => generateStarfieldBuffer(target, idx, 512).buffer);
+  }, [target]);
+
+  const frameCount = liveFrames.length > 0 ? liveFrames.length : fallbackEpochs.length;
+
+  // Phase-locked blink timer
   useEffect(() => {
     if (viewMode !== 'blink' || !isPlaying || diffMode) return undefined;
     const interval = setInterval(() => {
@@ -201,34 +247,34 @@ export default function ExplorerPage() {
     return () => clearInterval(interval);
   }, [viewMode, isPlaying, fps, frameCount, diffMode]);
 
-  // Dispatch active raster to Web Worker
+  // Dispatch active raster (modulated in real time by activeWavelength & sedRatio) to Web Worker
   useEffect(() => {
     if (!workerRef.current) return;
 
     const useLive = liveFrames.length > 0;
-    const size = useLive ? liveFrames[0].meta.width : 256;
-    const bufA = useLive
-      ? liveFrames[0].buffer
-      : generateStarfieldBuffer(target, 0, activeWavelength, 256).buffer;
-    const bufB = useLive
-      ? liveFrames[liveFrames.length - 1].buffer
-      : generateStarfieldBuffer(target, target.epochs.length - 1, activeWavelength, 256).buffer;
-    const safeIdx = epochIdx % Math.max(1, liveFrames.length || target.epochs.length);
-    const curBuf = useLive
-      ? liveFrames[safeIdx].buffer
-      : generateStarfieldBuffer(target, safeIdx, activeWavelength, 256).buffer;
+    const size = 512;
+    const lastIdx = (useLive ? liveFrames.length : fallbackEpochs.length) - 1;
+    const safeIdx = epochIdx % Math.max(1, useLive ? liveFrames.length : fallbackEpochs.length);
+
+    const rawA = useLive ? liveFrames[0].buffer : fallbackEpochs[0];
+    const rawB = useLive ? liveFrames[lastIdx].buffer : fallbackEpochs[lastIdx];
+    const rawCur = useLive ? liveFrames[safeIdx].buffer : fallbackEpochs[safeIdx];
+
+    const bufA = applyBandpassModulation(rawA, size, target, 0, activeWavelength, sedRatio);
+    const bufB = applyBandpassModulation(rawB, size, target, lastIdx, activeWavelength, sedRatio);
+    const curBuf = applyBandpassModulation(rawCur, size, target, safeIdx, activeWavelength, sedRatio);
 
     const dispatch = (id, buf) => {
-      const copy = new Float32Array(buf);
       workerRef.current.postMessage(
-        { id, buffer: copy, width: size, height: size, stretch, colormap, gain },
-        [copy.buffer]
+        { id, buffer: buf, width: size, height: size, stretch, colormap, gain },
+        [buf.buffer]
       );
     };
 
     if (diffMode) {
       if (psfDiffResult) {
-        dispatch('primary', psfDiffResult.buffer);
+        const copy = new Float32Array(psfDiffResult.buffer);
+        dispatch('primary', copy);
       } else {
         dispatch('primary', computeDifferenceBuffer(bufA, bufB));
       }
@@ -253,24 +299,21 @@ export default function ExplorerPage() {
     }
   }, [
     liveFrames,
+    fallbackEpochs,
     target,
     epochIdx,
     activeWavelength,
+    sedRatio,
     stretch,
     colormap,
     gain,
     viewMode,
     curtainPos,
     diffMode,
-    psfDiffResult
+    psfDiffResult,
+    crosshair,
+    apertureRadius
   ]);
-
-  const fallbackSpectrum = useMemo(
-    () => generateSpectrum(target, apertureRadius, sampleOffset),
-    [target, apertureRadius, sampleOffset]
-  );
-
-  const activeBands = liveSpectrumBands || fallbackSpectrum.bands;
 
   const handleSearch = async (e) => {
     e.preventDefault();
@@ -292,10 +335,14 @@ export default function ExplorerPage() {
       };
       setTarget(nextTarget);
       setQueryInput(nextTarget.name);
+      setSampleCoords({ ra: nextTarget.ra, dec: nextTarget.dec });
+      setCrosshair({ x: 256, y: 256 });
     } catch {
       const local = resolveQueryToTarget(queryInput, BENCHMARK_TARGETS);
       setTarget(local);
       setQueryInput(local.name);
+      setSampleCoords({ ra: local.ra, dec: local.dec });
+      setCrosshair({ x: 256, y: 256 });
     }
     setEpochIdx(0);
     setSampleOffset(0);
@@ -322,6 +369,13 @@ export default function ExplorerPage() {
     const y = Math.round(((e.clientY - rect.top) / rect.height) * canvas.height);
     setCrosshair({ x, y });
     setSampleOffset((x - canvas.width / 2) * 0.02 + (y - canvas.height / 2) * 0.02);
+
+    // Convert clicked (x, y) on 512x512 cutout to WCS (RA, Dec)
+    const degPerPx = (target.fovArcmin / 60) / canvas.width;
+    const cosDec = Math.max(0.1, Math.cos((target.dec * Math.PI) / 180));
+    const clickRa = ((target.ra - ((x - canvas.width / 2) * degPerPx) / cosDec) % 360 + 360) % 360;
+    const clickDec = Math.max(-90, Math.min(90, target.dec + (y - canvas.height / 2) * degPerPx));
+    setSampleCoords({ ra: clickRa, dec: clickDec });
   };
 
   const handleExportCsv = () => {
@@ -363,9 +417,9 @@ export default function ExplorerPage() {
   };
 
   const activeFrameMeta = liveFrames[epochIdx % Math.max(1, liveFrames.length)]?.meta || {
-    width: 256,
-    height: 256,
-    bitpix: -32,
+    width: 512,
+    height: 512,
+    bitpix: 16,
     bscale: 1,
     bzero: 0,
     epoch: target.epochs[epochIdx % target.epochs.length],
@@ -509,19 +563,18 @@ export default function ExplorerPage() {
                     : `Local Variance Δ (${target.epochs[0]} − ${target.epochs[target.epochs.length - 1]})`
                   : viewMode === 'swipe'
                     ? `${target.epochs[0]} | ${target.epochs[target.epochs.length - 1]}`
-                    : `Epoch: ${activeFrameMeta.epoch?.slice(0, 10) || target.epochs[0]} · λ=${activeWavelength.toFixed(2)} µm`}
+                    : `Epoch: ${activeFrameMeta.epoch?.slice(0, 10) || target.epochs[0]} · λ=${activeWavelength.toFixed(2)} µm (${Math.round(sedRatio * 100)}% flux)`}
               </span>
             </div>
 
             <canvas
               ref={canvasPrimaryRef}
-              width={256}
-              height={256}
+              width={512}
+              height={512}
               onClick={handleCanvasClick}
               style={{
-                width: viewMode === 'side-by-side' && !diffMode ? '100%' : 'min(100%, 400px)',
+                width: viewMode === 'side-by-side' && !diffMode ? '100%' : 'min(100%, 420px)',
                 aspectRatio: '1 / 1',
-                imageRendering: 'pixelated',
                 cursor: 'crosshair'
               }}
             />
@@ -529,13 +582,12 @@ export default function ExplorerPage() {
             {viewMode === 'side-by-side' && !diffMode && (
               <canvas
                 ref={canvasSecondaryRef}
-                width={256}
-                height={256}
+                width={512}
+                height={512}
                 onClick={handleCanvasClick}
                 style={{
                   width: '100%',
                   aspectRatio: '1 / 1',
-                  imageRendering: 'pixelated',
                   cursor: 'crosshair'
                 }}
               />
@@ -602,7 +654,14 @@ export default function ExplorerPage() {
             {viewMode === 'swipe' && !diffMode && (
               <label
                 className="mono"
-                style={{ fontSize: 11, color: '#98a0ad', display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}
+                style={{
+                  fontSize: 11,
+                  color: '#98a0ad',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  flex: 1
+                }}
               >
                 Curtain ({Math.round(curtainPos * 100)}%)
                 <input
@@ -618,7 +677,10 @@ export default function ExplorerPage() {
             )}
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <label className="mono" style={{ fontSize: 11, color: '#98a0ad', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <label
+                className="mono"
+                style={{ fontSize: 11, color: '#98a0ad', display: 'flex', alignItems: 'center', gap: 6 }}
+              >
                 <SlidersHorizontal size={12} /> Gain {gain.toFixed(1)}×
                 <input
                   type="range"
@@ -688,7 +750,13 @@ export default function ExplorerPage() {
             <div style={{ display: 'grid', gap: 12 }}>
               <label
                 className="mono"
-                style={{ fontSize: 11.5, color: '#98a0ad', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                style={{
+                  fontSize: 11.5,
+                  color: '#98a0ad',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}
               >
                 <span>Aperture Radius: {apertureRadius} px (~{apertureRadius * 6}″)</span>
                 <input
@@ -704,14 +772,22 @@ export default function ExplorerPage() {
 
               <label
                 className="mono"
-                style={{ fontSize: 11.5, color: '#98a0ad', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                style={{
+                  fontSize: 11.5,
+                  color: '#98a0ad',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center'
+                }}
               >
-                <span>Bandpass Slice: {activeWavelength.toFixed(2)} µm</span>
+                <span>
+                  Bandpass Slice: {activeWavelength.toFixed(2)} µm ({Math.round(sedRatio * 100)}% peak)
+                </span>
                 <input
                   type="range"
                   min="0.75"
                   max="5.0"
-                  step="0.05"
+                  step="0.02"
                   value={activeWavelength}
                   onChange={(e) => setActiveWavelength(Number(e.target.value))}
                   style={{ width: 140 }}
@@ -724,11 +800,12 @@ export default function ExplorerPage() {
             <div className="panel-header">
               <span className="panel-title">WCS &amp; Target Telemetry</span>
               <span className="mono" style={{ fontSize: 11, color: '#52b788' }}>
-                {liveFrames.length > 0 ? `${activeFrameMeta.width}×${activeFrameMeta.height} uint16` : '6.2″/px TAN'}
+                {liveFrames.length > 0 ? `${activeFrameMeta.width}×${activeFrameMeta.height} uint16` : '512×512 TAN'}
               </span>
             </div>
             <div className="mono" style={{ fontSize: 12, display: 'grid', gap: 6, color: '#98a0ad' }}>
               <div>ICRS: {target.hmsDms}</div>
+              <div>Sampled: {sampleCoords.ra.toFixed(4)}°, {sampleCoords.dec.toFixed(4)}°</div>
               <div>Motion: {target.properMotion}</div>
               <div>Notes: {target.spectralNote}</div>
             </div>

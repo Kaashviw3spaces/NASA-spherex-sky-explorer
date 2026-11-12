@@ -6,10 +6,10 @@ import numpy as np
 
 
 BENCHMARK_CATALOG: Dict[str, dict] = {
-    "barnard's star": {"ra": 269.4521, "dec": 4.6934, "dx": 3.6, "dy": -11.5, "peak": 42.8},
-    "wise 0855": {"ra": 133.7951, "dec": -7.2451, "dx": -9.8, "dy": 2.1, "peak": 3.4},
-    "epsilon indi b": {"ra": 331.0764, "dec": -56.7831, "dx": 5.4, "dy": -4.2, "peak": 18.6},
-    "rw aurigae": {"ra": 76.9565, "dec": 30.4014, "dx": 0.4, "dy": 0.2, "peak": 64.2},
+    "barnard's star": {"ra": 269.4521, "dec": 4.6934, "dx": 8.0, "dy": -16.0, "peak": 42.8},
+    "wise 0855": {"ra": 133.7951, "dec": -7.2451, "dx": -14.0, "dy": 5.0, "peak": 3.4},
+    "epsilon indi b": {"ra": 331.0764, "dec": -56.7831, "dx": 9.0, "dy": -7.0, "peak": 18.6},
+    "rw aurigae": {"ra": 76.9565, "dec": 30.4014, "dx": 1.0, "dy": 0.5, "peak": 64.2},
     "r draconis": {"ra": 248.1633, "dec": 66.7519, "dx": 0.0, "dy": 0.0, "peak": 112.5},
 }
 
@@ -99,14 +99,14 @@ def generate_calibrated_cutout(
     size: int = 512,
 ) -> np.ndarray:
     """
-    Generate a deterministic WCS-aligned cutout for local testing and offline fallback.
-    Uses localized stamp splatting for fast (< 10 ms) cutout generation.
+    Generate a deterministic WCS-aligned 512x512 cutout with a clean background starfield.
+    Wavelength-dependent PSF/halo modulation is applied dynamically so scrubbing is instant.
     """
     rng = np.random.default_rng(int((ra * 1000 + abs(dec) * 100) % 2**31))
-    sky = (0.12 + rng.normal(0.0, 0.012, size=(size, size))).astype(np.float32)
+    sky = (0.11 + rng.normal(0.0, 0.01, size=(size, size))).astype(np.float32)
 
     def _splat(cx: float, cy: float, amp: float, sig: float) -> None:
-        r = int(math.ceil(sig * 4.5))
+        r = int(math.ceil(sig * 4.2))
         x0, x1 = max(0, int(cx) - r), min(size, int(cx) + r + 1)
         y0, y1 = max(0, int(cy) - r), min(size, int(cy) + r + 1)
         if x1 <= x0 or y1 <= y0:
@@ -114,25 +114,77 @@ def generate_calibrated_cutout(
         yy, xx = np.mgrid[y0:y1, x0:x1]
         sky[y0:y1, x0:x1] += amp * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sig * sig))
 
-    for _ in range(40):
-        _splat(rng.uniform(24, size - 24), rng.uniform(24, size - 24), rng.uniform(0.4, 2.2), rng.uniform(1.5, 2.8))
+    for _ in range(42):
+        _splat(
+            rng.uniform(28, size - 28),
+            rng.uniform(28, size - 28),
+            rng.uniform(0.35, 1.45),
+            rng.uniform(2.2, 3.8),
+        )
 
-    cx = size * 0.5 + (epoch_idx - 1) * 4.5
-    cy = size * 0.5 + (epoch_idx - 1) * -3.2
-    wavelength_um = 0.75 + (max(1, min(102, band_index)) - 1) / 101.0 * 4.25
-    ice_atten = 1.0 - 0.35 * math.exp(-((wavelength_um - 3.05) / 0.22) ** 2)
-    _splat(cx, cy, 2.8 * ice_atten, 2.3)
+    cx = size * 0.5 + (epoch_idx - 1) * 10.0
+    cy = size * 0.5 + (epoch_idx - 1) * -7.5
+    _splat(cx, cy, 1.85, 5.5)
+    _splat(cx, cy, 0.65, 14.0)
 
     return sky
 
 
-def generate_spectrum_vector(ra: float, dec: float, radius_arcsec: float = 6.2) -> bytes:
-    """Return 102-band Float32Array (408 bytes) little-endian binary vector."""
+def generate_spectrum_vector(
+    ra: float,
+    dec: float,
+    radius_arcsec: float = 6.2,
+    center_ra: Optional[float] = None,
+    center_dec: Optional[float] = None,
+    fov_arcmin: float = 5.0,
+) -> bytes:
+    """
+    Return 102-band Float32Array (408 bytes) little-endian binary vector
+    extracted at the clicked WCS (ra, dec) within the cutout centered at (center_ra, center_dec).
+    """
     channels = 102
     w = np.linspace(0.75, 5.0, channels, dtype=np.float32)
-    scale = np.float32(18.0 * (0.75 + radius_arcsec / 24.0))
-    continuum = scale * np.exp(-(((w - 1.65) / 1.95) ** 2))
-    h2o = 0.45 * np.exp(-(((w - 3.05) / 0.14) ** 2))
-    co2 = 0.22 * np.exp(-(((w - 4.27) / 0.09) ** 2))
-    flux = np.maximum(0.05, continuum * (1.0 - h2o - co2)).astype("<f4")
+    c_ra = ra if center_ra is None else center_ra
+    c_dec = dec if center_dec is None else center_dec
+
+    size = 512
+    deg_per_px = (fov_arcmin / 60.0) / size
+    cos_dec = max(0.1, math.cos(math.radians(c_dec)))
+    dx_px = -((ra - c_ra) * cos_dec) / deg_per_px
+    dy_px = (dec - c_dec) / deg_per_px
+    px = size * 0.5 + dx_px
+    py = size * 0.5 + dy_px
+
+    cutout = generate_calibrated_cutout(c_ra, c_dec, epoch_idx=1, band_index=42, size=size)
+    yy, xx = np.mgrid[0:size, 0:size]
+    ap_px = max(2.0, (radius_arcsec / 6.2) * 5.0)
+    mask = ((xx - px) ** 2 + (yy - py) ** 2) <= (ap_px ** 2)
+    if np.any(mask):
+        peak_signal = float(np.max(cutout[mask])) - 0.12
+        mean_signal = float(np.mean(cutout[mask])) - 0.12
+    else:
+        peak_signal = 0.0
+        mean_signal = 0.0
+
+    dist_center = math.hypot(px - size * 0.5, py - size * 0.5)
+    ap_scale = 0.75 + radius_arcsec / 24.0
+
+    if peak_signal < 0.18:
+        rng = np.random.default_rng(int((abs(px) * 97 + abs(py) * 31) % 2**31))
+        flux = (0.14 + rng.normal(0.0, 0.03, size=channels)).astype("<f4")
+        flux = np.maximum(0.04, flux)
+        return flux.tobytes()
+
+    if dist_center < 22.0:
+        scale = np.float32(18.0 * ap_scale * min(1.3, max(0.3, peak_signal / 2.2)))
+        continuum = scale * np.exp(-(((w - 1.65) / 1.95) ** 2))
+        h2o = 0.55 * np.exp(-(((w - 3.05) / 0.14) ** 2))
+        co2 = 0.35 * np.exp(-(((w - 4.27) / 0.09) ** 2))
+        flux = np.maximum(0.05, continuum * (1.0 - h2o - co2)).astype("<f4")
+        return flux.tobytes()
+
+    slope = 0.35 if (int(px + py) % 2 == 0) else -0.35
+    scale = np.float32(12.0 * ap_scale * min(1.2, max(0.25, (mean_signal + peak_signal) * 0.5)))
+    continuum = scale * np.exp(-(((w - (2.1 + slope * 1.4)) / 2.1) ** 2))
+    flux = np.maximum(0.06, continuum).astype("<f4")
     return flux.tobytes()

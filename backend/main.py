@@ -91,8 +91,13 @@ async def spectrum(
     ra: float = Query(..., ge=0.0, le=360.0),
     dec: float = Query(..., ge=-90.0, le=90.0),
     radius_arcsec: float = Query(6.2, gt=0.5, le=60.0),
+    center_ra: Optional[float] = Query(None, ge=0.0, le=360.0),
+    center_dec: Optional[float] = Query(None, ge=-90.0, le=90.0),
+    fov_arcmin: float = Query(5.0, gt=0.1, le=15.0),
 ):
-    raw_bytes = generate_spectrum_vector(ra, dec, radius_arcsec)
+    raw_bytes = generate_spectrum_vector(
+        ra, dec, radius_arcsec, center_ra=center_ra, center_dec=center_dec, fov_arcmin=fov_arcmin
+    )
     cov = check_spherex_moc(ra, dec)
     return Response(
         content=raw_bytes,

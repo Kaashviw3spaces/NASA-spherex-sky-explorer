@@ -9,7 +9,7 @@ function applyStretch(val, stretch, gain) {
     return Math.min(1, Math.asinh(v * 3.5 * gain) / Math.asinh(9));
   }
   const zmin = 0.085;
-  const zmax = 1.45 / Math.max(0.4, gain);
+  const zmax = 2.85 / Math.max(0.4, gain);
   return Math.max(0, Math.min(1, (v - zmin) / (zmax - zmin)));
 }
 

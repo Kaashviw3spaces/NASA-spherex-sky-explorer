@@ -43,10 +43,25 @@ export async function resolveTargetApi(query) {
   return resp.json();
 }
 
-export async function fetchSpectrumApi(ra, dec, radiusArcsec = 12.4) {
-  const resp = await fetch(
-    `/api/spectrum?ra=${encodeURIComponent(ra)}&dec=${encodeURIComponent(dec)}&radius_arcsec=${encodeURIComponent(radiusArcsec)}`
-  );
+export async function fetchSpectrumApi(
+  ra,
+  dec,
+  radiusArcsec = 12.4,
+  centerRa = null,
+  centerDec = null,
+  fovArcmin = 5.0
+) {
+  const params = new URLSearchParams({
+    ra: String(ra),
+    dec: String(dec),
+    radius_arcsec: String(radiusArcsec),
+    fov_arcmin: String(fovArcmin)
+  });
+  if (centerRa !== null && centerDec !== null) {
+    params.set('center_ra', String(centerRa));
+    params.set('center_dec', String(centerDec));
+  }
+  const resp = await fetch(`/api/spectrum?${params.toString()}`);
   if (!resp.ok) throw new Error(`Spectrum fetch failed: ${resp.status}`);
   const buf = await resp.arrayBuffer();
   const floats = new Float32Array(buf);
