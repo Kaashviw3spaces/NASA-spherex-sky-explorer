@@ -445,7 +445,6 @@ export default function ExplorerPage() {
         </form>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <MocRadar ra={target.ra} dec={target.dec} inFootprint={target.inSpherexFootprint} />
           <span className={`provenance-badge ${target.inSpherexFootprint ? 'spherex' : 'unwise'}`}>
             {target.inSpherexFootprint
               ? 'SPHEREx 102-Band'
@@ -738,6 +737,20 @@ export default function ExplorerPage() {
               showLines={showLines}
             />
           </div>
+
+          <MocRadar
+            ra={target.ra}
+            dec={target.dec}
+            inFootprint={target.inSpherexFootprint}
+            targetName={target.name}
+            onSelectTarget={(bt) => {
+              setTarget(bt);
+              setQueryInput(bt.name);
+              setSampleCoords({ ra: bt.ra, dec: bt.dec });
+              setCrosshair({ x: 256, y: 256 });
+              setEpochIdx(0);
+            }}
+          />
 
           <div className="panel-box">
             <div className="panel-header">

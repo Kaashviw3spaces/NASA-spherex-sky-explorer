@@ -6,12 +6,23 @@ import numpy as np
 
 
 BENCHMARK_CATALOG: Dict[str, dict] = {
-    "barnard's star": {"ra": 269.4521, "dec": 4.6934, "dx": 8.0, "dy": -16.0, "peak": 42.8},
-    "wise 0855": {"ra": 133.7951, "dec": -7.2451, "dx": -14.0, "dy": 5.0, "peak": 3.4},
-    "epsilon indi b": {"ra": 331.0764, "dec": -56.7831, "dx": 9.0, "dy": -7.0, "peak": 18.6},
-    "rw aurigae": {"ra": 76.9565, "dec": 30.4014, "dx": 1.0, "dy": 0.5, "peak": 64.2},
-    "r draconis": {"ra": 248.1633, "dec": 66.7519, "dx": 0.0, "dy": 0.0, "peak": 112.5},
+    "barnard's star": {"ra": 269.4521, "dec": 4.6934, "dx": 5.5, "dy": -16.5, "var": 0.04, "stars": 42, "peak": 42.8},
+    "wise 0855": {"ra": 133.7951, "dec": -7.2451, "dx": -15.0, "dy": 4.5, "var": 0.08, "stars": 42, "peak": 3.4},
+    "epsilon indi b": {"ra": 331.0764, "dec": -56.7831, "dx": 9.0, "dy": -6.5, "var": 0.06, "stars": 42, "peak": 18.6},
+    "rw aurigae": {"ra": 76.9565, "dec": 30.4014, "dx": 0.2, "dy": 0.1, "var": -0.52, "stars": 36, "peak": 64.2},
+    "r draconis": {"ra": 248.1633, "dec": 66.7519, "dx": 0.0, "dy": 0.0, "var": 0.68, "stars": 38, "peak": 112.5},
+    "unwise fallback": {"ra": 266.4168, "dec": -29.0078, "dx": 3.5, "dy": 2.5, "var": 0.18, "stars": 110, "peak": 28.0},
 }
+
+
+def _match_benchmark(ra: float, dec: float) -> dict:
+    for item in BENCHMARK_CATALOG.values():
+        if abs(item["ra"] - ra) < 0.05 and abs(item["dec"] - dec) < 0.05:
+            return item
+    # Deterministic motion/variability for custom sky coordinates
+    dx = ((ra * 13.0) % 14.0) - 7.0
+    dy = ((abs(dec) * 7.0) % 12.0) - 6.0
+    return {"dx": dx, "dy": dy, "var": 0.12, "stars": 45}
 
 
 def check_spherex_moc(ra: float, dec: float) -> dict:
@@ -114,7 +125,8 @@ def generate_calibrated_cutout(
         yy, xx = np.mgrid[y0:y1, x0:x1]
         sky[y0:y1, x0:x1] += amp * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sig * sig))
 
-    for _ in range(42):
+    props = _match_benchmark(ra, dec)
+    for _ in range(props["stars"]):
         _splat(
             rng.uniform(28, size - 28),
             rng.uniform(28, size - 28),
@@ -122,10 +134,12 @@ def generate_calibrated_cutout(
             rng.uniform(2.2, 3.8),
         )
 
-    cx = size * 0.5 + (epoch_idx - 1) * 10.0
-    cy = size * 0.5 + (epoch_idx - 1) * -7.5
-    _splat(cx, cy, 1.85, 5.5)
-    _splat(cx, cy, 0.65, 14.0)
+    cx = size * 0.5 + (epoch_idx - 1) * props["dx"]
+    cy = size * 0.5 + (epoch_idx - 1) * props["dy"]
+    # Variability: positive var brightens across epochs (Mira peak), negative var dims (T Tauri dip)
+    var_factor = max(0.28, 1.0 + (epoch_idx - 1) * (props["var"] * 0.45))
+    _splat(cx, cy, 1.85 * var_factor, 5.5)
+    _splat(cx, cy, 0.65 * var_factor, 14.0)
 
     return sky
 

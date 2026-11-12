@@ -11,8 +11,8 @@ export default function SpectrumChart({
 }) {
   const svgRef = useRef(null);
   const W = 520;
-  const H = 230;
-  const pad = { top: 18, right: 16, bottom: 32, left: 46 };
+  const H = 236;
+  const pad = { top: 20, right: 28, bottom: 34, left: 46 };
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
 
@@ -65,7 +65,7 @@ export default function SpectrumChart({
           border: '1px solid #232832'
         }}
       >
-        {/* Grid lines */}
+        {/* Horizontal grid lines */}
         {[0.25, 0.5, 0.75].map((frac) => {
           const y = pad.top + plotH * frac;
           return (
@@ -81,6 +81,7 @@ export default function SpectrumChart({
           );
         })}
 
+        {/* Wavelength ticks */}
         {[1.0, 2.0, 3.0, 4.0, 5.0].map((wTick) => (
           <g key={wTick}>
             <line
@@ -126,10 +127,14 @@ export default function SpectrumChart({
           0.0
         </text>
 
-        {/* Molecular diagnostic markers */}
+        {/* Molecular diagnostic markers with staggered non-overlapping badges */}
         {showLines &&
-          MOLECULAR_MARKERS.map((m) => {
+          MOLECULAR_MARKERS.map((m, idx) => {
             const mx = xOf(m.wavelength);
+            const alignLeftOfLine = idx % 2 === 0;
+            const rowY = idx % 2 === 0 ? pad.top + 13 : pad.top + 28;
+            const textX = alignLeftOfLine ? mx - 5 : mx + 5;
+            const anchor = alignLeftOfLine ? 'end' : 'start';
             return (
               <g key={m.id}>
                 <line
@@ -140,12 +145,16 @@ export default function SpectrumChart({
                   stroke={m.color}
                   strokeWidth="1"
                   strokeDasharray="3 3"
-                  opacity="0.7"
+                  opacity="0.75"
                 />
                 <text
-                  x={mx + 3}
-                  y={pad.top + 10}
+                  x={textX}
+                  y={rowY}
+                  textAnchor={anchor}
                   fill={m.color}
+                  stroke="#0b0d10"
+                  strokeWidth="3"
+                  paintOrder="stroke"
                   fontSize="9.5"
                   fontFamily="IBM Plex Mono, monospace"
                 >

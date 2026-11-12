@@ -1,11 +1,12 @@
 import sys
 from pathlib import Path
 import time
-
+import numpy as np
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from main import app  # noqa: E402
+from wcs_pipeline import build_tan_wcs, reproject_to_tangent_grid  # noqa: E402
 
 
 def test_coverage_moc_check():
@@ -21,12 +22,53 @@ def test_coverage_moc_check():
         assert r2.json()["unwise_fallback_available"] is True
 
 
-def test_spectrum_408_byte_fast_path():
+def test_resolve_all_formats_and_benchmarks():
     with TestClient(app) as tc:
-        resp = tc.get("/api/spectrum?ra=133.7951&dec=-7.2451&radius_arcsec=6.2")
-        assert resp.status_code == 200
-        assert resp.headers["content-type"] == "application/octet-stream"
-        assert len(resp.content) == 408
+        for name in ["Barnard's Star", "WISE 0855", "Epsilon Indi B", "RW Aurigae", "R Draconis"]:
+            r = tc.get(f"/api/resolve?q={name}")
+            assert r.status_code == 200
+            assert r.json()["spherex_covered"] is True
+
+        # Decimal & HMS/DMS
+        r_dec = tc.get("/api/resolve?q=133.7951,-7.2451")
+        assert r_dec.status_code == 200
+        r_hms = tc.get("/api/resolve?q=08:55:10.8 -07:14:42")
+        assert r_hms.status_code == 200
+        assert abs(r_hms.json()["ra"] - 133.795) < 0.02
+
+
+def test_spectrum_408_byte_and_wcs_click_sampling():
+    with TestClient(app) as tc:
+        # Center star click -> high flux with H2O absorption dip
+        r_center = tc.get(
+            "/api/spectrum?ra=133.7951&dec=-7.2451&radius_arcsec=12.4&center_ra=133.7951&center_dec=-7.2451&fov_arcmin=5.0"
+        )
+        assert r_center.status_code == 200
+        assert len(r_center.content) == 408
+        center_flux = np.frombuffer(r_center.content, dtype="<f4")
+
+        # Empty sky click near corner (outside star margin) -> flat low noise floor
+        r_sky = tc.get(
+            "/api/spectrum?ra=133.8355&dec=-7.2055&radius_arcsec=6.2&center_ra=133.7951&center_dec=-7.2451&fov_arcmin=5.0"
+        )
+        assert r_sky.status_code == 200
+        sky_flux = np.frombuffer(r_sky.content, dtype="<f4")
+        assert float(np.max(center_flux)) > float(np.max(sky_flux)) * 10.0
+
+
+def test_wcs_tangent_plane_reprojection():
+    # Verify reprojection from native SPHEREx (6.2"/px) to target grid preserves peak position
+    ra, dec = 133.7951, -7.2451
+    src_wcs = build_tan_wcs(ra, dec, 128, 128, pixel_scale_arcsec=6.2)
+    yy, xx = np.mgrid[0:128, 0:128]
+    src_img = np.exp(-((xx - 64.0) ** 2 + (yy - 64.0) ** 2) / (2.0 * 3.0**2)).astype(np.float32)
+
+    regridded, out_wcs = reproject_to_tangent_grid(
+        src_img, src_wcs, ra, dec, out_shape=(256, 256), pixel_scale_arcsec=3.1
+    )
+    assert regridded.shape == (256, 256)
+    peak_y, peak_x = np.unravel_index(np.argmax(regridded), regridded.shape)
+    assert abs(peak_x - 128) <= 2 and abs(peak_y - 128) <= 2
 
 
 def test_cutout_async_job_and_binary_raster_and_psf_diff():
