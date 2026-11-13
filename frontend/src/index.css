@@ -54,6 +54,7 @@ select {
   flex-direction: column;
 }
 
+.site-header,
 .topbar {
   height: 54px;
   border-bottom: 1px solid var(--border-hairline);
@@ -67,12 +68,22 @@ select {
   z-index: 40;
 }
 
+.header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.brand-lockup,
 .brand {
   display: flex;
   align-items: baseline;
   gap: 12px;
+  text-decoration: none;
 }
 
+.brand-dot,
 .brand-mark {
   width: 9px;
   height: 9px;
@@ -80,6 +91,7 @@ select {
   background: var(--accent-amber);
   display: inline-block;
   flex-shrink: 0;
+  box-shadow: 0 0 8px rgba(232, 141, 58, 0.45);
 }
 
 .brand-title {

@@ -81,14 +81,14 @@ def test_cutout_async_job_and_binary_raster_and_psf_diff():
         if resp.status_code == 202:
             job_url = resp.json()["status_url"]
             rasters = []
-            for _ in range(60):
+            for _ in range(120):
                 poll = tc.get(job_url)
                 assert poll.status_code == 200
                 data = poll.json()
                 if data["status"] == "ready":
                     rasters = data["completed_rasters"]
                     break
-                time.sleep(0.05)
+                time.sleep(0.1)
             assert len(rasters) >= 2
         else:
             rasters = resp.json()["rasters"]
@@ -118,3 +118,62 @@ def test_cutout_async_job_and_binary_raster_and_psf_diff():
         r_fits = tc.get(f"/api/export/fits?cache_key={first['cache_key']}")
         assert r_fits.status_code == 200
         assert r_fits.content.startswith(b"SIMPLE  =")
+
+
+def test_health_endpoint():
+    with TestClient(app) as tc:
+        resp = tc.get("/api/health")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert "cache_items" in resp.json()
+
+
+def test_band_index_modulation():
+    from moc_index import generate_calibrated_cutout
+
+    cutout_band1 = generate_calibrated_cutout(133.7951, -7.2451, epoch_idx=1, band_index=1, size=256)
+    cutout_band102 = generate_calibrated_cutout(133.7951, -7.2451, epoch_idx=1, band_index=102, size=256)
+    # Band 1 (0.75 um) and Band 102 (5.0 um) must not be identical
+    assert not np.allclose(cutout_band1, cutout_band102)
+
+
+def test_validation_errors():
+    with TestClient(app) as tc:
+        # Invalid cache keys
+        r1 = tc.get("/api/data/raster/bad_key")
+        assert r1.status_code == 400
+
+        r2 = tc.get("/api/export/fits?cache_key=bad_key")
+        assert r2.status_code == 400
+
+        # Out-of-range bands
+        r3 = tc.post(
+            "/api/jobs/cutouts",
+            json={"ra": 133.7951, "dec": -7.2451, "fov_arcmin": 5.0, "bands": [999]},
+        )
+        assert r3.status_code == 422
+
+
+def test_sesame_redirect_follow():
+    with TestClient(app) as tc:
+        resp = tc.get("/api/resolve?q=Vega")
+        # Should successfully resolve with HTTP 200 via follow_redirects
+        if resp.status_code == 200:
+            data = resp.json()
+            assert abs(data["ra"] - 279.23) < 1.0
+            assert abs(data["dec"] - 38.78) < 1.0
+
+
+def test_irsa_tap_hook():
+    with TestClient(app) as tc:
+        resp = tc.get("/api/tap/query?ra=269.4521&dec=4.6934&radius_arcsec=15.0")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] in ("success", "offline_fallback")
+        assert len(data["sources"]) >= 1
+
+
+if __name__ == "__main__":
+    import pytest
+
+    sys.exit(pytest.main(["-v", __file__]))

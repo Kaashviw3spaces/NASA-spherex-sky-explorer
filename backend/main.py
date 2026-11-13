@@ -1,5 +1,6 @@
 import asyncio
 import io
+import re
 import uuid
 from typing import List, Optional
 
@@ -9,13 +10,14 @@ from astropy.wcs import WCS
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from cache import BoundedLRUCache, JobStore
 from moc_index import (
     check_spherex_moc,
     generate_calibrated_cutout,
     generate_spectrum_vector,
+    query_irsa_tap,
     resolve_target_query,
 )
 from wcs_pipeline import (
@@ -24,6 +26,15 @@ from wcs_pipeline import (
     psf_matched_diff,
     quantize_to_uint16,
 )
+
+CACHE_KEY_RE = re.compile(r"^[a-f0-9]{24}$")
+
+
+def validate_cache_key(key: str) -> str:
+    if not CACHE_KEY_RE.match(key):
+        raise HTTPException(status_code=400, detail="Invalid cache key format.")
+    return key
+
 
 app = FastAPI(title="SPHEREx Sky Explorer Proxy API", version="1.0.0")
 
@@ -46,6 +57,7 @@ app.add_middleware(
         "X-Survey-Provenance",
         "X-Band-Index",
         "X-Band-Wavelength-Um",
+        "X-Channel-Count",
         "X-Diff-Confidence",
     ],
 )
@@ -61,10 +73,20 @@ class CutoutJobRequest(BaseModel):
     bands: List[int] = Field(default_factory=lambda: [1, 42, 102])
     epochs: Optional[List[str]] = None
 
+    @field_validator("bands")
+    @classmethod
+    def validate_bands(cls, v: List[int]) -> List[int]:
+        if not v:
+            raise ValueError("bands list cannot be empty")
+        for b in v:
+            if not (0 <= b <= 102):
+                raise ValueError(f"band index {b} out of range [0, 102]")
+        return v
+
 
 class DiffRequest(BaseModel):
-    raster_key_a: str
-    raster_key_b: str
+    raster_key_a: str = Field(..., pattern="^[a-f0-9]{24}$")
+    raster_key_b: str = Field(..., pattern="^[a-f0-9]{24}$")
     kernel: str = Field("alard_lupton", pattern="^(alard_lupton|gaussian)$")
 
 
@@ -109,6 +131,19 @@ async def spectrum(
     )
 
 
+@app.get("/api/tap/query")
+async def tap_query(
+    ra: float = Query(..., ge=0.0, le=360.0),
+    dec: float = Query(..., ge=-90.0, le=90.0),
+    radius_arcsec: float = Query(12.4, gt=0.5, le=360.0),
+    table: str = Query("allwise_p3as_psd", pattern="^[a-zA-Z0-9_]+$"),
+):
+    """
+    Live NASA/IPAC IRSA TAP Query Hook for cross-matching infrared catalog sources and SPHEREx survey tiles.
+    """
+    return await query_irsa_tap(ra=ra, dec=dec, radius_arcsec=radius_arcsec, table=table)
+
+
 async def _process_cutout_job(
     job_id: str,
     ra: float,
@@ -122,42 +157,54 @@ async def _process_cutout_job(
     size = 512
     pixel_scale = (fov_arcmin * 60.0) / size
 
-    for e_idx, epoch in enumerate(epochs):
-        for band_idx in bands:
-            cache_key = BoundedLRUCache.make_key(
-                round(ra, 5), round(dec, 5), round(fov_arcmin, 2), epoch, band_idx, provenance
-            )
-            if not raster_cache.get(cache_key):
-                await asyncio.sleep(0.02)
-                flux = generate_calibrated_cutout(ra, dec, e_idx, band_idx, size=size)
-                raw_u16, bscale, bzero = quantize_to_uint16(flux)
-                wavelength_um = 0.75 + (max(1, min(102, band_idx)) - 1) / 101.0 * 4.25
-                headers = build_wcs_headers(
-                    width=size,
-                    height=size,
-                    bscale=bscale,
-                    bzero=bzero,
-                    ra=ra,
-                    dec=dec,
-                    pixel_scale_arcsec=pixel_scale,
-                    epoch=epoch,
-                    provenance=provenance,
-                    band_index=band_idx,
-                    wavelength_um=wavelength_um,
+    try:
+        for e_idx, epoch in enumerate(epochs):
+            for band_idx in bands:
+                cache_key = BoundedLRUCache.make_key(
+                    round(ra, 5), round(dec, 5), round(fov_arcmin, 2), epoch, band_idx, provenance
                 )
-                raster_cache.put(cache_key, raw_u16, headers)
+                if not raster_cache.has(cache_key):
+                    flux = await asyncio.to_thread(
+                        generate_calibrated_cutout,
+                        ra,
+                        dec,
+                        e_idx,
+                        band_idx,
+                        size,
+                        epoch,
+                        fov_arcmin,
+                        True,
+                    )
+                    raw_u16, bscale, bzero = await asyncio.to_thread(quantize_to_uint16, flux)
+                    wavelength_um = 0.75 + (max(1, min(102, band_idx)) - 1) / 101.0 * 4.25
+                    headers = build_wcs_headers(
+                        width=size,
+                        height=size,
+                        bscale=bscale,
+                        bzero=bzero,
+                        ra=ra,
+                        dec=dec,
+                        pixel_scale_arcsec=pixel_scale,
+                        epoch=epoch,
+                        provenance=provenance,
+                        band_index=band_idx,
+                        wavelength_um=wavelength_um,
+                    )
+                    raster_cache.put(cache_key, raw_u16, headers)
 
-            completed.append(
-                {
-                    "cache_key": cache_key,
-                    "epoch": epoch,
-                    "band_index": band_idx,
-                    "raster_url": f"/api/data/raster/{cache_key}",
-                }
-            )
-            job_store.update(job_id, status="partial", completed_rasters=list(completed))
+                completed.append(
+                    {
+                        "cache_key": cache_key,
+                        "epoch": epoch,
+                        "band_index": band_idx,
+                        "raster_url": f"/api/data/raster/{cache_key}",
+                    }
+                )
+                job_store.update(job_id, status="partial", completed_rasters=list(completed))
 
-    job_store.update(job_id, status="ready", completed_rasters=completed)
+        job_store.update(job_id, status="ready", completed_rasters=completed)
+    except Exception as exc:
+        job_store.update(job_id, status="failed", error=str(exc))
 
 
 @app.post("/api/jobs/cutouts")
@@ -177,7 +224,7 @@ async def create_cutout_job(req: CutoutJobRequest):
             cache_key = BoundedLRUCache.make_key(
                 round(req.ra, 5), round(req.dec, 5), round(req.fov_arcmin, 2), epoch, band_idx, provenance
             )
-            if raster_cache.get(cache_key):
+            if raster_cache.has(cache_key):
                 all_cached.append(
                     {
                         "cache_key": cache_key,
@@ -227,6 +274,7 @@ async def get_job_status(job_id: str):
 
 @app.get("/api/data/raster/{cache_key}")
 async def get_raster(cache_key: str):
+    validate_cache_key(cache_key)
     entry = raster_cache.get(cache_key)
     if not entry:
         raise HTTPException(status_code=404, detail="Raster not found in cache.")
@@ -236,6 +284,8 @@ async def get_raster(cache_key: str):
 
 @app.post("/api/diff")
 async def compute_diff(req: DiffRequest):
+    validate_cache_key(req.raster_key_a)
+    validate_cache_key(req.raster_key_b)
     entry_a = raster_cache.get(req.raster_key_a)
     entry_b = raster_cache.get(req.raster_key_b)
     if not entry_a or not entry_b:
@@ -243,12 +293,17 @@ async def compute_diff(req: DiffRequest):
 
     bytes_a, hdr_a = entry_a
     bytes_b, hdr_b = entry_b
-    w, h = (int(x) for x in hdr_a["X-Raster-Dimensions"].split(","))
+    w_a, h_a = (int(x) for x in hdr_a["X-Raster-Dimensions"].split(","))
+    w_b, h_b = (int(x) for x in hdr_b["X-Raster-Dimensions"].split(","))
+    if (w_a, h_a) != (w_b, h_b):
+        raise HTTPException(status_code=400, detail="Raster dimensions must match for differencing.")
+
+    w, h = w_a, h_a
     img_a = dequantize_uint16(bytes_a, (h, w), float(hdr_a["X-BSCALE"]), float(hdr_a["X-BZERO"]))
     img_b = dequantize_uint16(bytes_b, (h, w), float(hdr_b["X-BSCALE"]), float(hdr_b["X-BZERO"]))
 
-    diff_img, confidence = psf_matched_diff(img_a, img_b, kernel=req.kernel)
-    raw_u16, bscale, bzero = quantize_to_uint16(diff_img)
+    diff_img, confidence = await asyncio.to_thread(psf_matched_diff, img_a, img_b, req.kernel)
+    raw_u16, bscale, bzero = await asyncio.to_thread(quantize_to_uint16, diff_img)
 
     ra, dec = (float(x) for x in hdr_a["X-WCS-CRVAL"].split(","))
     cdelt = abs(float(hdr_a["X-WCS-CDELT"].split(",")[0])) * 3600.0
@@ -271,12 +326,14 @@ async def compute_diff(req: DiffRequest):
 
 @app.get("/api/export/fits")
 async def export_fits(cache_key: str):
+    validate_cache_key(cache_key)
     entry = raster_cache.get(cache_key)
     if not entry:
         raise HTTPException(status_code=404, detail="Raster not found in cache.")
     raw_bytes, hdr = entry
     w, h = (int(x) for x in hdr["X-Raster-Dimensions"].split(","))
     flux = dequantize_uint16(raw_bytes, (h, w), float(hdr["X-BSCALE"]), float(hdr["X-BZERO"]))
+    flux_fits = np.flipud(flux)
 
     ra, dec = (float(x) for x in hdr["X-WCS-CRVAL"].split(","))
     cdelt_x, cdelt_y = (float(x) for x in hdr["X-WCS-CDELT"].split(","))
@@ -287,7 +344,7 @@ async def export_fits(cache_key: str):
     wcs.wcs.crval = [ra, dec]
     wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
 
-    hdu = fits.PrimaryHDU(data=flux.astype(np.float32), header=wcs.to_header())
+    hdu = fits.PrimaryHDU(data=flux_fits.astype(np.float32), header=wcs.to_header())
     hdu.header["SURVEY"] = hdr["X-Survey-Provenance"]
     hdu.header["EPOCH"] = hdr["X-Observation-Epoch"]
     hdu.header["BANDIDX"] = int(hdr["X-Band-Index"])

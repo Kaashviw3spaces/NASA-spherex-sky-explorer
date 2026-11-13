@@ -19,10 +19,8 @@ def _match_benchmark(ra: float, dec: float) -> dict:
     for item in BENCHMARK_CATALOG.values():
         if abs(item["ra"] - ra) < 0.05 and abs(item["dec"] - dec) < 0.05:
             return item
-    # Deterministic motion/variability for custom sky coordinates
-    dx = ((ra * 13.0) % 14.0) - 7.0
-    dy = ((abs(dec) * 7.0) % 12.0) - 6.0
-    return {"dx": dx, "dy": dy, "var": 0.12, "stars": 45}
+    # Static background field for arbitrary non-benchmark sky coordinates
+    return {"dx": 0.0, "dy": 0.0, "var": 0.0, "stars": 45}
 
 
 def check_spherex_moc(ra: float, dec: float) -> dict:
@@ -86,7 +84,7 @@ async def resolve_target_query(query: str) -> Optional[dict]:
         return {"name": q, "ra": round(ra, 6), "dec": round(dec, 6), **cov}
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
             resp = await client.get(f"https://cds.unistra.fr/cgi-bin/nph-sesame/-oxp/SNV?{q}")
             if resp.status_code == 200:
                 jra = re.search(r"<jradeg>([0-9.\-]+)</jradeg>", resp.text)
@@ -96,9 +94,153 @@ async def resolve_target_query(query: str) -> Optional[dict]:
                     dec = float(jdec.group(1))
                     cov = check_spherex_moc(ra, dec)
                     return {"name": q, "ra": ra, "dec": dec, **cov}
-    except httpx.HTTPError:
+    except Exception:
         return None
 
+    return None
+
+
+async def query_irsa_tap(
+    ra: float,
+    dec: float,
+    radius_arcsec: float = 12.4,
+    table: str = "allwise_p3as_psd",
+) -> dict:
+    """
+    Live NASA/IPAC IRSA TAP query hook for astronomical infrared catalog tables and SPHEREx DR1 tiles.
+    """
+    radius_deg = max(0.0001, min(0.1, radius_arcsec / 3600.0))
+    adql = (
+        f"SELECT TOP 10 ra, dec, w1mpro, w2mpro FROM {table} "
+        f"WHERE CONTAINS(POINT('J2000', ra, dec), CIRCLE('J2000', {ra:.5f}, {dec:.5f}, {radius_deg:.6f})) = 1"
+    )
+    url = "https://irsa.ipac.caltech.edu/TAP/sync"
+    params = {
+        "REQUEST": "doQuery",
+        "LANG": "ADQL",
+        "FORMAT": "json",
+        "QUERY": adql,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            resp = await client.post(url, data=params)
+            if resp.status_code == 200:
+                data = resp.json()
+                rows = data.get("data", [])
+                fields = [f.get("name") for f in data.get("metadata", [])]
+                sources = []
+                for r in rows:
+                    source_dict = dict(zip(fields, r))
+                    sources.append(source_dict)
+                return {
+                    "status": "success",
+                    "provenance": "NASA/IPAC-IRSA-TAP",
+                    "table": table,
+                    "target": {"ra": ra, "dec": dec, "radius_arcsec": radius_arcsec},
+                    "count": len(sources),
+                    "sources": sources,
+                }
+    except Exception:
+        pass
+
+    cov = check_spherex_moc(ra, dec)
+    return {
+        "status": "offline_fallback",
+        "provenance": "SPHEREx-TAP-Simulated" if cov["spherex_covered"] else "unWISE-TAP-Simulated",
+        "table": table,
+        "target": {"ra": ra, "dec": dec, "radius_arcsec": radius_arcsec},
+        "count": 1,
+        "sources": [
+            {
+                "ra": ra,
+                "dec": dec,
+                "w1mpro": round(11.2 + (ra % 4.0), 3),
+                "w2mpro": round(10.8 + (abs(dec) % 3.0), 3),
+                "note": "Astrometric center seed",
+            }
+        ],
+    }
+
+
+def fetch_real_unwise_cutout(
+    ra: float,
+    dec: float,
+    epoch_idx: int = 0,
+    epoch_str: Optional[str] = None,
+    band_index: int = 1,
+    size: int = 512,
+    fov_arcmin: float = 5.0,
+) -> Optional[np.ndarray]:
+    """
+    Fetch genuine NASA unWISE/NEOWISE all-sky infrared FITS cutouts from the unWISE archive.
+    Reprojects using Astropy WCS onto standardized 512x512 tangent-plane grid.
+    """
+    import io
+    import tarfile
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from wcs_pipeline import reproject_to_tangent_grid
+
+    # Map sequential epochs to distinct real NEOWISE data releases spanning 2010 - 2021
+    release_sequence = ["allwise", "neo2", "neo5", "neo7"]
+    if isinstance(epoch_idx, int) and 0 <= epoch_idx < len(release_sequence):
+        version = release_sequence[epoch_idx]
+    else:
+        epoch_map = {
+            "2010": "allwise",
+            "2014": "neo1",
+            "2015": "neo2",
+            "2016": "neo3",
+            "2017": "neo4",
+            "2018": "neo5",
+            "2019": "neo6",
+            "2020": "neo7",
+            "2021": "neo8",
+        }
+        yr = str(epoch_str)[:4] if epoch_str else "allwise"
+        version = epoch_map.get(yr, release_sequence[min(len(release_sequence) - 1, max(0, epoch_idx))])
+
+    band = "2" if band_index > 50 else "1"
+
+    unwise_px = int(math.ceil((fov_arcmin * 60.0) / 2.75)) + 16
+    unwise_px = max(60, min(600, unwise_px))
+
+    url = "https://unwise.me/cutout_fits"
+    params = {
+        "version": version,
+        "ra": round(ra, 5),
+        "dec": round(dec, 5),
+        "size": unwise_px,
+        "bands": band,
+    }
+
+    try:
+        with httpx.Client(timeout=12.0, follow_redirects=True) as client:
+            resp = client.get(url, params=params)
+            if resp.status_code != 200 or len(resp.content) < 1000:
+                return None
+
+            with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+                for member in tar.getmembers():
+                    if member.name.endswith("-img-m.fits"):
+                        fits_file = tar.extractfile(member)
+                        with fits.open(fits_file) as hdul:
+                            src_flux = hdul[0].data
+                            src_wcs = WCS(hdul[0].header)
+
+                            pix_scale = (fov_arcmin * 60.0) / size
+                            regridded, _ = reproject_to_tangent_grid(
+                                src_flux,
+                                src_wcs,
+                                target_ra=ra,
+                                target_dec=dec,
+                                out_shape=(size, size),
+                                pixel_scale_arcsec=pix_scale,
+                            )
+                            return regridded.astype(np.float32)
+    except Exception:
+        return None
     return None
 
 
@@ -108,13 +250,37 @@ def generate_calibrated_cutout(
     epoch_idx: int,
     band_index: int,
     size: int = 512,
+    epoch_str: Optional[str] = None,
+    fov_arcmin: float = 5.0,
+    prefer_real: bool = True,
 ) -> np.ndarray:
     """
-    Generate a deterministic WCS-aligned 512x512 cutout with a clean background starfield.
-    Wavelength-dependent PSF/halo modulation is applied dynamically so scrubbing is instant.
+    Generate WCS-aligned 512x512 cutout.
+    Attempts live fetch of genuine NASA unWISE/NEOWISE FITS observations first.
+    Falls back to deterministic calibration if offline or network unavailable.
     """
+    if prefer_real:
+        real_cutout = fetch_real_unwise_cutout(
+            ra=ra,
+            dec=dec,
+            epoch_idx=epoch_idx,
+            epoch_str=epoch_str,
+            band_index=band_index,
+            size=size,
+            fov_arcmin=fov_arcmin,
+        )
+        if real_cutout is not None:
+            return real_cutout
+
     rng = np.random.default_rng(int((ra * 1000 + abs(dec) * 100) % 2**31))
     sky = (0.11 + rng.normal(0.0, 0.01, size=(size, size))).astype(np.float32)
+
+    # SPHEREx 102 spectrophotometric bands: 0.75 - 5.0 um
+    # Handle either 0-based [0..101] or 1-based [1..102] band indices
+    b_idx = max(0, min(101, band_index if band_index < 102 else band_index - 1))
+    wavelength = 0.75 + (b_idx / 101.0) * (5.0 - 0.75)
+    # Diffraction limit PSF width scale: lambda / D
+    psf_lambda_scale = 0.8 + 0.4 * (wavelength / 2.5)
 
     def _splat(cx: float, cy: float, amp: float, sig: float) -> None:
         r = int(math.ceil(sig * 4.2))
@@ -126,20 +292,23 @@ def generate_calibrated_cutout(
         sky[y0:y1, x0:x1] += amp * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sig * sig))
 
     props = _match_benchmark(ra, dec)
-    for _ in range(props["stars"]):
+    for i in range(props["stars"]):
+        star_color = 1.0 + ((i % 3) - 1) * 0.2 * ((wavelength - 2.8) / 2.1)
         _splat(
             rng.uniform(28, size - 28),
             rng.uniform(28, size - 28),
-            rng.uniform(0.35, 1.45),
-            rng.uniform(2.2, 3.8),
+            rng.uniform(0.35, 1.45) * star_color,
+            rng.uniform(2.2, 3.8) * psf_lambda_scale,
         )
 
     cx = size * 0.5 + (epoch_idx - 1) * props["dx"]
     cy = size * 0.5 + (epoch_idx - 1) * props["dy"]
     # Variability: positive var brightens across epochs (Mira peak), negative var dims (T Tauri dip)
     var_factor = max(0.28, 1.0 + (epoch_idx - 1) * (props["var"] * 0.45))
-    _splat(cx, cy, 1.85 * var_factor, 5.5)
-    _splat(cx, cy, 0.65 * var_factor, 14.0)
+    # Wavelength flux response: peak near 1.65um with molecular absorption features
+    sed_mod = max(0.25, 1.0 + 0.35 * math.sin((wavelength - 0.75) / 4.25 * math.pi))
+    _splat(cx, cy, 1.85 * var_factor * sed_mod, 5.5 * psf_lambda_scale)
+    _splat(cx, cy, 0.65 * var_factor * sed_mod, 14.0 * psf_lambda_scale)
 
     return sky
 
@@ -169,7 +338,9 @@ def generate_spectrum_vector(
     px = size * 0.5 + dx_px
     py = size * 0.5 + dy_px
 
-    cutout = generate_calibrated_cutout(c_ra, c_dec, epoch_idx=1, band_index=42, size=size)
+    cutout = generate_calibrated_cutout(
+        c_ra, c_dec, epoch_idx=1, band_index=42, size=size, prefer_real=False
+    )
     yy, xx = np.mgrid[0:size, 0:size]
     ap_px = max(2.0, (radius_arcsec / 6.2) * 5.0)
     mask = ((xx - px) ** 2 + (yy - py) ** 2) <= (ap_px ** 2)

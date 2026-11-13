@@ -46,7 +46,8 @@ def reproject_to_tangent_grid(
         src_flux.astype(np.float32),
         coords,
         order=1,
-        mode="nearest",
+        mode="constant",
+        cval=0.11,
     )
     return regridded.astype(np.float32), target_wcs
 

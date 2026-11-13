@@ -40,9 +40,12 @@ export function generateStarfieldBuffer(target, epochIndex, size = 512) {
     splatGaussian(buffer, size, sx, sy, mag, sigma);
   }
 
-  const cx = size * 0.5 + (epochIndex - 1) * (target.motionDxPerEpoch || -8.0);
-  const cy = size * 0.5 + (epochIndex - 1) * (target.motionDyPerEpoch || 5.0);
-  const varMod = 1 + Math.sin(epochIndex * 1.55) * (target.variabilityAmp || 0.08);
+  const motionDx = typeof target.motionDxPerEpoch === "number" ? target.motionDxPerEpoch : 0.0;
+  const motionDy = typeof target.motionDyPerEpoch === "number" ? target.motionDyPerEpoch : 0.0;
+  const variability = typeof target.variabilityAmp === "number" ? target.variabilityAmp : 0.0;
+  const cx = size * 0.5 + (epochIndex - 1) * motionDx;
+  const cy = size * 0.5 + (epochIndex - 1) * motionDy;
+  const varMod = 1 + Math.sin(epochIndex * 1.55) * variability;
   splatGaussian(buffer, size, cx, cy, 1.85 * varMod, 5.5);
   splatGaussian(buffer, size, cx, cy, 0.65 * varMod, 14.0);
 
@@ -63,61 +66,13 @@ export function applyBandpassModulation(
   wavelengthUm,
   sedRatio
 ) {
+  // Return clean clone of buffer with subtle SED spectral flux weighting
+  // Strictly preserves authentic pixel data without fabricating artificial stars or moving artifacts
   const out = new Float32Array(baseBuffer);
-  const scale = size / 512;
-
-  // Target position in this epoch
-  const cx = size * 0.5 + (epochIndex - 1) * 10.0 * scale;
-  const cy = size * 0.5 + (epochIndex - 1) * -7.5 * scale;
-
-  // sedRatio is in [0.05, 1.0] (1.0 at 1.65 um peak, ~0.18 at 3.05 um H2O dip)
-  // Compute delta to add/subtract from the base cutout's central star + halo + spikes
-  const deltaCore = (sedRatio - 0.55) * 2.2;
-  const deltaHalo = (sedRatio - 0.55) * 0.95;
-
-  splatGaussian(out, size, cx, cy, deltaCore, 6.0 * scale);
-  splatGaussian(out, size, cx, cy, deltaHalo, 18.0 * scale);
-
-  // Add subtle diffraction spikes at bright continuum wavelengths (sedRatio > 0.45)
-  if (sedRatio > 0.35) {
-    const spikeAmp = (sedRatio - 0.35) * 0.85;
-    const spikeLen = Math.round(48 * scale * sedRatio);
-    for (let d = -spikeLen; d <= spikeLen; d++) {
-      const falloff = Math.exp(-Math.abs(d) / (16 * scale));
-      const xH = Math.round(cx + d);
-      const yH = Math.round(cy);
-      if (xH >= 0 && xH < size && yH >= 0 && yH < size) {
-        out[yH * size + xH] += spikeAmp * falloff;
-        if (yH + 1 < size) out[(yH + 1) * size + xH] += spikeAmp * falloff * 0.45;
-        if (yH - 1 >= 0) out[(yH - 1) * size + xH] += spikeAmp * falloff * 0.45;
-      }
-      const xV = Math.round(cx);
-      const yV = Math.round(cy + d);
-      if (xV >= 0 && xV < size && yV >= 0 && yV < size) {
-        out[yV * size + xV] += spikeAmp * falloff;
-        if (xV + 1 < size) out[yV * size + (xV + 1)] += spikeAmp * falloff * 0.45;
-        if (xV - 1 >= 0) out[yV * size + (xV - 1)] += spikeAmp * falloff * 0.45;
-      }
-    }
-  }
-
-  // Modulate 12 prominent field stars by color temperature (short-IR blue vs long-IR dusty red)
-  const baseSeed = target.ra * 0.37 + Math.abs(target.dec) * 1.13;
-  const normWave = (wavelengthUm - 2.8) / 2.1; // [-1, +1] across 0.75..5.0 um
-  for (let i = 0; i < 12; i++) {
-    const sx = (48 + seededRandom(baseSeed + i * 13.7) * (512 - 96)) * scale;
-    const sy = (48 + seededRandom(baseSeed + i * 29.3) * (512 - 96)) * scale;
-    const isDustyRed = i % 2 === 0;
-    const starDelta = isDustyRed ? normWave * 0.95 : -normWave * 0.95;
-    splatGaussian(out, size, sx, sy, starDelta, 4.2 * scale);
-    splatGaussian(out, size, sx, sy, starDelta * 0.35, 10.5 * scale);
-  }
-
-  // Clamp floor to sky background so negative deltas never create black holes
+  const factor = 0.85 + 0.3 * (sedRatio || 0.7);
   for (let i = 0; i < out.length; i++) {
-    if (out[i] < 0.08) out[i] = 0.08;
+    out[i] = baseBuffer[i] * factor;
   }
-
   return out;
 }
 
@@ -148,4 +103,61 @@ export function computeDifferenceBuffer(bufA, bufB) {
     diff[i] = 1.2 + (zA - zB) * 0.32;
   }
   return diff;
+}
+
+export function applyStretch(valOrBuf, stretch = 'zscale', gain = 1.0) {
+  if (typeof valOrBuf === 'number') {
+    return Math.max(0, Math.min(1, valOrBuf * gain));
+  }
+  if (valOrBuf && valOrBuf.length !== undefined) {
+    const totalPixels = valOrBuf.length;
+    const out = new Float32Array(totalPixels);
+    const sampleCount = 512;
+    const step = Math.max(1, Math.floor(totalPixels / sampleCount));
+    const samples = new Float32Array(sampleCount);
+    let count = 0;
+    for (let i = 0; i < totalPixels && count < sampleCount; i += step) {
+      samples[count++] = valOrBuf[i];
+    }
+    samples.subarray(0, count).sort();
+
+    const zmin = samples[Math.floor(count * 0.02)];
+    const pHigh = samples[Math.floor(count * 0.995)];
+    const zmax = pHigh > zmin ? pHigh : zmin + 1.0;
+
+    for (let i = 0; i < totalPixels; i++) {
+      const u = Math.max(0, (valOrBuf[i] - zmin) / (zmax - zmin));
+      let s;
+      if (stretch === 'asinh') {
+        s = Math.asinh(u * 8.0 * gain) / Math.asinh(8.0);
+      } else if (stretch === 'log') {
+        s = Math.log1p(u * 50.0 * gain) / Math.log1p(50.0);
+      } else {
+        s = u * gain;
+      }
+      out[i] = Math.max(0, Math.min(1, s));
+    }
+    return out;
+  }
+  return valOrBuf;
+}
+
+export function mapColormap(t, colormap = 'inferno') {
+  const u = Math.max(0, Math.min(1, t));
+  if (colormap === 'grayscale_r') {
+    const c = Math.round((1 - u) * 242);
+    return [c, c, c];
+  }
+  if (colormap === 'viridis') {
+    const r = Math.round(255 * Math.min(1, Math.max(0, -0.35 + 1.4 * u * u)));
+    const g = Math.round(255 * Math.min(1, Math.max(0, 0.12 + 0.85 * u)));
+    const b = Math.round(255 * Math.min(1, Math.max(0, 0.34 + 0.55 * Math.sin(u * Math.PI))));
+    return [r, g, b];
+  }
+  const r = Math.round(255 * Math.min(1, Math.pow(u, 0.55) * 1.15));
+  const g = Math.round(255 * Math.min(1, Math.pow(u, 1.35) * 0.95));
+  const b = Math.round(
+    255 * Math.min(1, 0.08 + Math.sin(u * Math.PI * 0.9) * 0.42 + Math.pow(u, 3.2) * 0.6)
+  );
+  return [r, g, b];
 }

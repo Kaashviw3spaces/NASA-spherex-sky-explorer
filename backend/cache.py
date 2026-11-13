@@ -12,11 +12,15 @@ class BoundedLRUCache:
 
     def __init__(
         self,
-        cache_dir: str = "./cache/spherex",
+        cache_dir: Optional[str] = None,
         high_watermark_bytes: int = 480 * 1024 * 1024,
         low_watermark_bytes: int = 380 * 1024 * 1024,
         max_mem_items: int = 64,
     ):
+        if cache_dir is None:
+            cache_dir = os.environ.get("SPHEREX_CACHE_DIR")
+            if not cache_dir:
+                cache_dir = str(Path(__file__).resolve().parent / "cache" / "spherex")
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.high_watermark = high_watermark_bytes
@@ -41,6 +45,12 @@ class BoundedLRUCache:
         raw = "|".join(str(p) for p in parts)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
+    def has(self, key: str) -> bool:
+        with self._lock:
+            if key in self._mem:
+                return True
+            return (self.cache_dir / f"{key}.bin").exists() and (self.cache_dir / f"{key}.json").exists()
+
     def get(self, key: str) -> Optional[Tuple[bytes, dict]]:
         with self._lock:
             if key in self._mem:
@@ -54,7 +64,10 @@ class BoundedLRUCache:
 
                 data = bin_path.read_bytes()
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                self._disk_index.move_to_end(key, last=True)
+                if key in self._disk_index:
+                    self._disk_index.move_to_end(key, last=True)
+                else:
+                    self._disk_index[key] = len(data)
                 self._put_mem(key, data, meta)
                 return data, meta
             return None

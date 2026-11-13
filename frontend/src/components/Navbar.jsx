@@ -1,39 +1,40 @@
-import { NavLink } from 'react-router-dom';
-import { ArrowUpRight } from 'lucide-react';
+import { Link, useLocation } from 'react-router-dom';
+import { Telescope, Compass, Bookmark, Target, Cpu, Sparkles } from 'lucide-react';
 
 export default function Navbar() {
-  return (
-    <header className="topbar">
-      <NavLink to="/" className="brand">
-        <span className="brand-mark" aria-hidden="true" />
-        <span className="brand-title">SPHEREx Sky Explorer</span>
-        <span className="brand-sub">0.75–5.0 µm · WCS Workbench</span>
-      </NavLink>
+  const location = useLocation();
 
-      <nav className="nav-links" aria-label="Primary Navigation">
-        <NavLink
-          to="/"
-          end
-          className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
-        >
-          Overview
-        </NavLink>
-        <NavLink
-          to="/targets"
-          className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
-        >
-          Benchmark Targets
-        </NavLink>
-        <NavLink
-          to="/architecture"
-          className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
-        >
-          Architecture
-        </NavLink>
-        <NavLink to="/explorer" className="nav-cta">
-          Open Explorer <ArrowUpRight size={14} />
-        </NavLink>
-      </nav>
+  const navItems = [
+    { to: '/', label: 'Overview', icon: Telescope },
+    { to: '/explorer', label: 'Sky Explorer', icon: Compass },
+    { to: '/scene', label: 'Scene View', icon: Sparkles },
+    { to: '/library', label: 'Library', icon: Bookmark },
+    { to: '/targets', label: 'Benchmark Targets', icon: Target },
+    { to: '/architecture', label: 'Architecture', icon: Cpu }
+  ];
+
+  return (
+    <header className="site-header">
+      <div className="header-inner">
+        <Link to="/" className="brand-lockup">
+          <span className="brand-dot" />
+          <span className="brand-title">SPHEREx Sky Explorer</span>
+          <span className="brand-sub">0.75–5.0 µm All-Sky Telemetry</span>
+        </Link>
+
+        <nav className="nav-links">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = location.pathname === item.to;
+            return (
+              <Link key={item.to} to={item.to} className={`nav-link ${active ? 'active' : ''}`}>
+                <Icon size={14} />
+                <span>{item.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
     </header>
   );
 }

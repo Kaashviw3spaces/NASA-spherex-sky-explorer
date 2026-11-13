@@ -11,13 +11,17 @@ import {
   SlidersHorizontal,
   Check,
   FileCode2,
-  Sparkles
+  Sparkles,
+  Maximize2,
+  Video,
+  Bookmark
 } from 'lucide-react';
 import { BENCHMARK_TARGETS } from '../data/catalog';
 import { generateSpectrum } from '../data/sed';
 import { resolveQueryToTarget } from '../data/resolver';
 import {
   fetchCutoutsWithPolling,
+  getCachedCutouts,
   fetchPsfDiffApi,
   fetchSpectrumApi,
   resolveTargetApi
@@ -43,26 +47,76 @@ export default function ExplorerPage() {
       if (found) return found;
     }
     if (ra && dec) return resolveQueryToTarget(`${ra}, ${dec}`, BENCHMARK_TARGETS);
-    return BENCHMARK_TARGETS[1];
+    return BENCHMARK_TARGETS[0];
   }, []);
 
   const [target, setTarget] = useState(initialTarget);
   const [queryInput, setQueryInput] = useState(initialTarget.name);
   const [viewMode, setViewMode] = useState(searchParams.get('mode') || 'blink');
   const [stretch, setStretch] = useState(searchParams.get('stretch') || 'zscale');
-  const [colormap, setColormap] = useState('inferno');
+  const [colormap, setColormap] = useState(searchParams.get('colormap') || 'inferno');
   const [gain, setGain] = useState(1.0);
-  const [diffMode, setDiffMode] = useState(false);
+  const [diffMode, setDiffMode] = useState(searchParams.get('diff') === 'true' || searchParams.get('mode') === 'diff');
 
   // Blink & progressive ring buffer state
-  const [isPlaying, setIsPlaying] = useState(true);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [fps, setFps] = useState(3);
-  const [epochIdx, setEpochIdx] = useState(0);
-  const [curtainPos, setCurtainPos] = useState(0.5);
-  const [liveFrames, setLiveFrames] = useState([]);
-  const [backendStatus, setBackendStatus] = useState('connecting');
+  const [epochIdx, setEpochIdx] = useState(parseInt(searchParams.get('epoch') || '0', 10) || 0);
+  const [curtainPos, setCurtainPos] = useState(parseFloat(searchParams.get('curtain') || '0.5') || 0.5);
+  const [liveFrames, setLiveFrames] = useState(() => getCachedCutouts(initialTarget.ra, initialTarget.dec, initialTarget.fovArcmin) || []);
+  const [backendStatus, setBackendStatus] = useState(
+    getCachedCutouts(initialTarget.ra, initialTarget.dec, initialTarget.fovArcmin)?.length > 0 ? 'live' : 'connecting'
+  );
   const [psfDiffResult, setPsfDiffResult] = useState(null);
   const [psfLoading, setPsfLoading] = useState(false);
+
+  // Update target when searchParams change (e.g. from TargetsPage, Back, or deep links)
+  useEffect(() => {
+    const tId = searchParams.get('target');
+    const ra = searchParams.get('ra');
+    const dec = searchParams.get('dec');
+    if (tId) {
+      const found = BENCHMARK_TARGETS.find((t) => t.id === tId);
+      if (found && found.id !== target.id) {
+        setTarget(found);
+        setQueryInput(found.name);
+        setSampleCoords({ ra: found.ra, dec: found.dec });
+        setEpochIdx(0);
+        return;
+      }
+    }
+    if (ra && dec) {
+      const r = parseFloat(ra);
+      const d = parseFloat(dec);
+      if (!isNaN(r) && !isNaN(d) && (Math.abs(r - target.ra) > 0.0001 || Math.abs(d - target.dec) > 0.0001)) {
+        const resolved = resolveQueryToTarget(`${r}, ${d}`, BENCHMARK_TARGETS);
+        setTarget(resolved);
+        setQueryInput(resolved.name);
+        setSampleCoords({ ra: resolved.ra, dec: resolved.dec });
+        setEpochIdx(0);
+      }
+    }
+  }, [searchParams]);
+
+  const buildSceneUrl = (action = 'view') => {
+    const params = new URLSearchParams({
+      ra: target.ra.toFixed(4),
+      dec: target.dec.toFixed(4),
+      fov: (target.fovArcmin || 5.0).toFixed(1),
+      mode: diffMode ? 'diff' : viewMode,
+      stretch,
+      colormap,
+      gain: String(gain),
+      wavelength: activeWavelength.toFixed(2),
+      epoch: String(epochIdx),
+      title: target.name,
+      target: target.id || '',
+      diff: diffMode ? 'true' : 'false',
+      curtain: curtainPos.toFixed(2),
+      action
+    });
+    return `/scene?${params.toString()}`;
+  };
 
   // Spectroscopy & aperture state
   const [activeWavelength, setActiveWavelength] = useState(1.65);
@@ -77,6 +131,78 @@ export default function ExplorerPage() {
   });
   const [copiedLink, setCopiedLink] = useState(false);
   const [showHeaderModal, setShowHeaderModal] = useState(false);
+  const [isRecordingBlink, setIsRecordingBlink] = useState(false);
+  const [blinkRecordProgress, setBlinkRecordProgress] = useState(0);
+  const blinkMediaRecorderRef = useRef(null);
+  const blinkChunksRef = useRef([]);
+
+  const handleRecordBlinkVideo = () => {
+    const canvas = canvasPrimaryRef.current;
+    if (!canvas || isRecordingBlink) return;
+
+    try {
+      if (!isPlaying) {
+        setIsPlaying(true);
+      }
+
+      const stream = canvas.captureStream(30);
+      let mimeType = 'video/webm';
+      if (typeof MediaRecorder.isTypeSupported === 'function') {
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+          mimeType = 'video/webm;codecs=vp9';
+        } else if (MediaRecorder.isTypeSupported('video/webm')) {
+          mimeType = 'video/webm';
+        } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+          mimeType = 'video/mp4';
+        } else {
+          mimeType = '';
+        }
+      }
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      blinkMediaRecorderRef.current = recorder;
+      blinkChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          blinkChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const actualType = recorder.mimeType || mimeType || 'video/mp4';
+        const blob = new Blob(blinkChunksRef.current, { type: actualType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const ext = actualType.includes('webm') ? 'webm' : 'mp4';
+        const targetClean = (target.name || 'target').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+        a.download = `spherex_${targetClean}_blink.${ext}`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setIsRecordingBlink(false);
+        setBlinkRecordProgress(0);
+      };
+
+      recorder.start();
+      setIsRecordingBlink(true);
+      setBlinkRecordProgress(1);
+
+      let sec = 1;
+      const timer = setInterval(() => {
+        sec += 1;
+        setBlinkRecordProgress(sec);
+        if (sec >= 5) {
+          clearInterval(timer);
+          recorder.stop();
+        }
+      }, 1000);
+    } catch (err) {
+      console.error('Failed to capture blink video:', err);
+      alert('Blink video recording is not supported in this browser.');
+      setIsRecordingBlink(false);
+    }
+  };
 
   const canvasPrimaryRef = useRef(null);
   const canvasSecondaryRef = useRef(null);
@@ -170,7 +296,7 @@ export default function ExplorerPage() {
         bands: [42]
       },
       (frames, isComplete) => {
-        if (!controller.signal.aborted && (isComplete || frames.length >= 3)) {
+        if (!controller.signal.aborted && frames.length > 0) {
           setLiveFrames(frames.slice(0, 16));
           setBackendStatus('live');
         }
@@ -260,20 +386,21 @@ export default function ExplorerPage() {
     const rawB = useLive ? liveFrames[lastIdx].buffer : fallbackEpochs[lastIdx];
     const rawCur = useLive ? liveFrames[safeIdx].buffer : fallbackEpochs[safeIdx];
 
-    const bufA = applyBandpassModulation(rawA, size, target, 0, activeWavelength, sedRatio);
-    const bufB = applyBandpassModulation(rawB, size, target, lastIdx, activeWavelength, sedRatio);
-    const curBuf = applyBandpassModulation(rawCur, size, target, safeIdx, activeWavelength, sedRatio);
+    const bufA = useLive ? rawA : applyBandpassModulation(rawA, size, target, 0, activeWavelength, sedRatio);
+    const bufB = useLive ? rawB : applyBandpassModulation(rawB, size, target, lastIdx, activeWavelength, sedRatio);
+    const curBuf = useLive ? rawCur : applyBandpassModulation(rawCur, size, target, safeIdx, activeWavelength, sedRatio);
 
     const dispatch = (id, buf) => {
+      const copy = new Float32Array(buf);
       workerRef.current.postMessage(
-        { id, buffer: buf, width: size, height: size, stretch, colormap, gain },
-        [buf.buffer]
+        { id, buffer: copy, width: size, height: size, stretch, colormap, gain },
+        [copy.buffer]
       );
     };
 
     if (diffMode) {
       if (psfDiffResult) {
-        const copy = new Float32Array(psfDiffResult.buffer);
+        const copy = new Float32Array(psfDiffResult.buffer.slice(0));
         dispatch('primary', copy);
       } else {
         dispatch('primary', computeDifferenceBuffer(bufA, bufB));
@@ -281,7 +408,7 @@ export default function ExplorerPage() {
       return;
     }
 
-    if (viewMode === 'blink') {
+    if (viewMode === 'blink' || viewMode === 'static') {
       dispatch('primary', curBuf);
     } else if (viewMode === 'swipe') {
       const combined = new Float32Array(size * size);
@@ -320,18 +447,26 @@ export default function ExplorerPage() {
     try {
       const resolved = await resolveTargetApi(queryInput);
       const nextTarget = {
-        ...BENCHMARK_TARGETS[1],
         id: `api-${resolved.ra.toFixed(2)}-${resolved.dec.toFixed(2)}`,
         name: resolved.name,
         ra: resolved.ra,
         dec: resolved.dec,
         hmsDms: `${resolved.ra.toFixed(4)} deg, ${resolved.dec.toFixed(4)} deg`,
+        fovArcmin: 5.0,
         inSpherexFootprint: resolved.spherex_covered,
-        survey: resolved.spherex_covered ? 'SPHEREx 102-Band' : 'unWISE Multi-Epoch',
+        survey: resolved.spherex_covered ? 'SPHEREx 102-Band' : 'unWISE Fallback',
+        properMotion: '0.00 arcsec/yr (Resolved Celestial Object)',
+        spectralNote: resolved.spherex_covered ? 'SPHEREx 0.75–5.0 µm survey field' : 'unWISE multi-epoch fallback field',
+        dqFlag: 'NOMINAL',
+        motionDxPerEpoch: 0.0,
+        motionDyPerEpoch: 0.0,
+        variabilityAmp: 0.0,
+        iceDepth: { h2o: 0.05, pah: 0.0, co2: 0.02, co: 0.05 },
+        peakFluxMjy: 15.0,
         epochs:
           resolved.primary_survey_epochs?.length > 0
             ? resolved.primary_survey_epochs.map((s) => s.slice(0, 7))
-            : ['2014-03', '2019-09', '2023-09']
+            : (resolved.spherex_covered ? ['2025-05', '2025-11', '2026-05', '2026-10'] : ['2014-03', '2019-09', '2023-09'])
       };
       setTarget(nextTarget);
       setQueryInput(nextTarget.name);
@@ -374,7 +509,7 @@ export default function ExplorerPage() {
     const degPerPx = (target.fovArcmin / 60) / canvas.width;
     const cosDec = Math.max(0.1, Math.cos((target.dec * Math.PI) / 180));
     const clickRa = ((target.ra - ((x - canvas.width / 2) * degPerPx) / cosDec) % 360 + 360) % 360;
-    const clickDec = Math.max(-90, Math.min(90, target.dec + (y - canvas.height / 2) * degPerPx));
+    const clickDec = Math.max(-90, Math.min(90, target.dec - (y - canvas.height / 2) * degPerPx));
     setSampleCoords({ ra: clickRa, dec: clickDec });
   };
 
@@ -463,6 +598,9 @@ export default function ExplorerPage() {
             {copiedLink ? <Check size={13} /> : <Share2 size={13} />}
             {copiedLink ? 'Copied' : 'Share'}
           </button>
+          <Link to="/library" className="btn-compact" title="Open Personal Library">
+            <Bookmark size={13} /> Library
+          </Link>
           <Link to="/targets" className="btn-compact">
             Presets
           </Link>
@@ -495,6 +633,16 @@ export default function ExplorerPage() {
                 onClick={() => setViewMode('side-by-side')}
               >
                 Side-by-Side
+              </button>
+              <button
+                type="button"
+                className={viewMode === 'static' ? 'active' : ''}
+                onClick={() => {
+                  setViewMode('static');
+                  setIsPlaying(false);
+                }}
+              >
+                Static Pictures
               </button>
             </div>
 
@@ -650,6 +798,32 @@ export default function ExplorerPage() {
               </div>
             )}
 
+            {viewMode === 'static' && !diffMode && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button
+                  type="button"
+                  className="btn-compact"
+                  onClick={() => setEpochIdx((i) => (i - 1 + frameCount) % frameCount)}
+                  aria-label="Previous epoch"
+                >
+                  <SkipBack size={13} />
+                  <span>Prev</span>
+                </button>
+                <span className="mono" style={{ fontSize: 11, color: '#e88d3a', padding: '0 6px', whiteSpace: 'nowrap' }}>
+                  {epochIdx + 1} / {frameCount} · {target.epochs?.[epochIdx] || `Epoch ${epochIdx + 1}`}
+                </span>
+                <button
+                  type="button"
+                  className="btn-compact"
+                  onClick={() => setEpochIdx((i) => (i + 1) % frameCount)}
+                  aria-label="Next epoch"
+                >
+                  <span>Next</span>
+                  <SkipForward size={13} />
+                </button>
+              </div>
+            )}
+
             {viewMode === 'swipe' && !diffMode && (
               <label
                 className="mono"
@@ -691,9 +865,26 @@ export default function ExplorerPage() {
                   style={{ width: 74 }}
                 />
               </label>
+              <button
+                type="button"
+                className={`btn-compact ${isRecordingBlink ? 'active' : ''}`}
+                onClick={handleRecordBlinkVideo}
+                disabled={isRecordingBlink}
+                title="Record a 5-second animated blink video clip (.webm / .mp4)"
+              >
+                <Video size={12} style={{ color: isRecordingBlink ? '#e88d3a' : 'inherit' }} />
+                <span>{isRecordingBlink ? `Recording (${blinkRecordProgress}/5s)...` : 'Blink Video'}</span>
+              </button>
               <button type="button" className="btn-compact" onClick={() => setShowHeaderModal(true)}>
                 <FileCode2 size={12} /> FITS Header
               </button>
+              <Link
+                to={buildSceneUrl('view')}
+                className="btn-compact"
+                title="Inspect in full screen or record 5s clip in Scene View"
+              >
+                <Maximize2 size={12} /> Scene View
+              </Link>
               {activeCacheKey && (
                 <a
                   href={`/api/export/fits?cache_key=${encodeURIComponent(activeCacheKey)}`}
@@ -703,6 +894,57 @@ export default function ExplorerPage() {
                 </a>
               )}
             </div>
+          </div>
+
+          {/* Two Equal-Width Scene Action Buttons */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: 12,
+              marginTop: 12
+            }}
+          >
+            <Link
+              to={buildSceneUrl('fullscreen')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                padding: '12px 16px',
+                borderRadius: 8,
+                background: 'var(--card-bg, #161b22)',
+                border: '1px solid var(--border, #30363d)',
+                color: '#e6edf3',
+                fontSize: 13,
+                fontWeight: 600,
+                textDecoration: 'none'
+              }}
+            >
+              <Maximize2 size={16} />
+              <span>View in Full Screen</span>
+            </Link>
+            <Link
+              to={buildSceneUrl('edit')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                padding: '12px 16px',
+                borderRadius: 8,
+                background: 'rgba(232, 141, 58, 0.12)',
+                border: '1px solid #e88d3a',
+                color: '#e88d3a',
+                fontSize: 13,
+                fontWeight: 600,
+                textDecoration: 'none'
+              }}
+            >
+              <Sparkles size={16} />
+              <span>Edit / Save the Scene</span>
+            </Link>
           </div>
         </section>
 
@@ -739,6 +981,8 @@ export default function ExplorerPage() {
           </div>
 
           <MocRadar
+            currentRa={target.ra}
+            currentDec={target.dec}
             ra={target.ra}
             dec={target.dec}
             inFootprint={target.inSpherexFootprint}
@@ -747,6 +991,34 @@ export default function ExplorerPage() {
               setTarget(bt);
               setQueryInput(bt.name);
               setSampleCoords({ ra: bt.ra, dec: bt.dec });
+              setCrosshair({ x: 256, y: 256 });
+              setEpochIdx(0);
+            }}
+            onSelectCoordinate={(coord) => {
+              const newT = {
+                id: `coord-${coord.ra.toFixed(2)}-${coord.dec.toFixed(2)}`,
+                name: coord.name,
+                ra: coord.ra,
+                dec: coord.dec,
+                hmsDms: `${coord.ra.toFixed(4)} deg, ${coord.dec.toFixed(4)} deg`,
+                fovArcmin: 5.0,
+                inSpherexFootprint: coord.inSpherexFootprint ?? coord.inMoc,
+                survey: (coord.inSpherexFootprint ?? coord.inMoc) ? 'SPHEREx 102-Band' : 'unWISE Fallback',
+                properMotion: '0.00 arcsec/yr (Coordinate Selection)',
+                spectralNote: 'Field sampled via Aitoff MOC Radar',
+                dqFlag: 'NOMINAL',
+                motionDxPerEpoch: 0.0,
+                motionDyPerEpoch: 0.0,
+                variabilityAmp: 0.0,
+                iceDepth: { h2o: 0.05, pah: 0.0, co2: 0.02, co: 0.05 },
+                peakFluxMjy: 12.0,
+                epochs: (coord.inSpherexFootprint ?? coord.inMoc)
+                  ? ['2025-05', '2025-11', '2026-05', '2026-10']
+                  : ['2014-03', '2019-09', '2023-09']
+              };
+              setTarget(newT);
+              setQueryInput(newT.name);
+              setSampleCoords({ ra: coord.ra, dec: coord.dec });
               setCrosshair({ x: 256, y: 256 });
               setEpochIdx(0);
             }}

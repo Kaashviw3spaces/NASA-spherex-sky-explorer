@@ -27,7 +27,8 @@ export default function SpectrumChart({
   const xOf = (w) => pad.left + ((w - minW) / (maxW - minW)) * plotW;
   const yOf = (f) => pad.top + plotH - (f / maxFlux) * plotH;
 
-  const linePath = bands
+  const safeBands = Array.isArray(bands) ? bands : [];
+  const linePath = safeBands
     .map((b, i) => `${i === 0 ? 'M' : 'L'} ${xOf(b.wavelength).toFixed(1)} ${yOf(b.flux).toFixed(1)}`)
     .join(' ');
 
@@ -41,11 +42,15 @@ export default function SpectrumChart({
   };
 
   const activePoint =
-    bands.reduce((best, cur) =>
-      Math.abs(cur.wavelength - activeWavelength) < Math.abs(best.wavelength - activeWavelength)
-        ? cur
-        : best
-    ) || bands[0];
+    safeBands.length > 0
+      ? safeBands.reduce(
+          (best, cur) =>
+            Math.abs(cur.wavelength - activeWavelength) < Math.abs(best.wavelength - activeWavelength)
+              ? cur
+              : best,
+          safeBands[0]
+        )
+      : null;
 
   return (
     <div>

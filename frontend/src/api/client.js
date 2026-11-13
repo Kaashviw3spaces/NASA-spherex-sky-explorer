@@ -82,18 +82,52 @@ export async function fetchSpectrumApi(
   return { bands, provenance };
 }
 
+// In-memory cutout cache keyed by coordinates to share instantly across pages
+const cutoutsMemoryCache = new Map();
+
+export function getCutoutCacheKey(ra, dec, fovArcmin = 5.0) {
+  const r = typeof ra === 'number' ? ra : parseFloat(ra);
+  const d = typeof dec === 'number' ? dec : parseFloat(dec);
+  const f = typeof fovArcmin === 'number' ? fovArcmin : parseFloat(fovArcmin);
+  return `${r.toFixed(4)}_${d.toFixed(4)}_${f.toFixed(1)}`;
+}
+
+export function getCachedCutouts(ra, dec, fovArcmin = 5.0) {
+  if (ra == null || dec == null || isNaN(ra) || isNaN(dec)) return null;
+  const key = getCutoutCacheKey(ra, dec, fovArcmin);
+  const found = cutoutsMemoryCache.get(key);
+  return found && found.length > 0 ? found : null;
+}
+
+export function setCachedCutouts(ra, dec, fovArcmin = 5.0, frames) {
+  if (ra == null || dec == null || isNaN(ra) || isNaN(dec)) return;
+  const key = getCutoutCacheKey(ra, dec, fovArcmin);
+  if (Array.isArray(frames) && frames.length > 0) {
+    cutoutsMemoryCache.set(key, frames);
+  }
+}
+
 export async function fetchCutoutsWithPolling(
   { ra, dec, fovArcmin = 5.0, bands = [42], epochs = null },
   onProgress,
   signal
 ) {
+  // If already in memory, serve immediately to eliminate any blank frame or lag
+  const cached = getCachedCutouts(ra, dec, fovArcmin);
+  if (cached && cached.length > 0) {
+    if (onProgress) onProgress(cached, true);
+  }
+
   const resp = await fetch('/api/jobs/cutouts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ra, dec, fov_arcmin: fovArcmin, bands, epochs }),
     signal
   });
-  if (!resp.ok) throw new Error(`Cutout job failed: ${resp.status}`);
+  if (!resp.ok) {
+    if (cached) return cached;
+    throw new Error(`Cutout job failed: ${resp.status}`);
+  }
 
   const initial = await resp.json();
   const loadedMap = new Map();
@@ -103,14 +137,18 @@ export async function fetchCutoutsWithPolling(
       if (loadedMap.has(item.cache_key)) continue;
       const decoded = await fetchBinaryRaster(item.raster_url);
       loadedMap.set(item.cache_key, { ...item, ...decoded });
-      if (onProgress) onProgress(Array.from(loadedMap.values()), false);
+      const currentList = Array.from(loadedMap.values());
+      setCachedCutouts(ra, dec, fovArcmin, currentList);
+      if (onProgress) onProgress(currentList, false);
     }
   };
 
   if (resp.status === 200 && initial.rasters) {
     await ingestItems(initial.rasters);
-    if (onProgress) onProgress(Array.from(loadedMap.values()), true);
-    return Array.from(loadedMap.values());
+    const result = Array.from(loadedMap.values());
+    setCachedCutouts(ra, dec, fovArcmin, result);
+    if (onProgress) onProgress(result, true);
+    return result;
   }
 
   // 202 Accepted async polling loop
@@ -126,13 +164,19 @@ export async function fetchCutoutsWithPolling(
       await ingestItems(job.completed_rasters);
     }
     if (job.status === 'ready') {
-      if (onProgress) onProgress(Array.from(loadedMap.values()), true);
-      return Array.from(loadedMap.values());
+      const result = Array.from(loadedMap.values());
+      setCachedCutouts(ra, dec, fovArcmin, result);
+      if (onProgress) onProgress(result, true);
+      return result;
     }
     waitMs = Math.min(1500, Math.round(waitMs * 1.25));
   }
 
-  return Array.from(loadedMap.values());
+  const result = Array.from(loadedMap.values());
+  if (result.length > 0) {
+    setCachedCutouts(ra, dec, fovArcmin, result);
+  }
+  return result;
 }
 
 export async function fetchPsfDiffApi(rasterKeyA, rasterKeyB, kernel = 'alard_lupton') {
