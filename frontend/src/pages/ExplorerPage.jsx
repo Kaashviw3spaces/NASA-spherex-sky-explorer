@@ -135,6 +135,21 @@ export default function ExplorerPage() {
   const [blinkRecordProgress, setBlinkRecordProgress] = useState(0);
   const blinkMediaRecorderRef = useRef(null);
   const blinkChunksRef = useRef([]);
+  const blinkTimerRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (blinkTimerRef.current) {
+        clearInterval(blinkTimerRef.current);
+        blinkTimerRef.current = null;
+      }
+      if (blinkMediaRecorderRef.current && blinkMediaRecorderRef.current.state !== 'inactive') {
+        try {
+          blinkMediaRecorderRef.current.stop();
+        } catch (_) {}
+      }
+    };
+  }, []);
 
   const handleRecordBlinkVideo = () => {
     const canvas = canvasPrimaryRef.current;
@@ -188,12 +203,16 @@ export default function ExplorerPage() {
       setIsRecordingBlink(true);
       setBlinkRecordProgress(1);
 
+      if (blinkTimerRef.current) clearInterval(blinkTimerRef.current);
       let sec = 1;
-      const timer = setInterval(() => {
+      blinkTimerRef.current = setInterval(() => {
         sec += 1;
         setBlinkRecordProgress(sec);
         if (sec >= 5) {
-          clearInterval(timer);
+          if (blinkTimerRef.current) {
+            clearInterval(blinkTimerRef.current);
+            blinkTimerRef.current = null;
+          }
           recorder.stop();
         }
       }, 1000);
@@ -272,16 +291,20 @@ export default function ExplorerPage() {
       {
         ra: target.ra.toFixed(4),
         dec: target.dec.toFixed(4),
-        fov: target.fovArcmin.toFixed(1),
+        fov: (target.fovArcmin || 5.0).toFixed(1),
         epochA: target.epochs[0],
         epochB: target.epochs[target.epochs.length - 1],
         mode: viewMode,
         stretch,
+        colormap,
+        diff: diffMode ? 'true' : 'false',
+        epoch: String(epochIdx),
+        curtain: curtainPos.toFixed(2),
         target: target.id
       },
       { replace: true }
     );
-  }, [target, viewMode, stretch, setSearchParams]);
+  }, [target, viewMode, stretch, colormap, diffMode, epochIdx, curtainPos, setSearchParams]);
 
   // Fetch base multi-epoch cutouts ONLY when target changes (never clear/flash during slider scrub)
   useEffect(() => {

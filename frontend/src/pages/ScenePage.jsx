@@ -113,6 +113,29 @@ export default function ScenePage() {
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const editorRef = useRef(null);
+  const recordTimerRef = useRef(null);
+  const compositeTimerRef = useRef(null);
+  const imageDataPrimaryRef = useRef(null);
+  const imageDataSecondaryRef = useRef(null);
+
+  // Clean up any active recording timers or streams on unmount
+  useEffect(() => {
+    return () => {
+      if (recordTimerRef.current) {
+        clearInterval(recordTimerRef.current);
+        recordTimerRef.current = null;
+      }
+      if (compositeTimerRef.current) {
+        clearInterval(compositeTimerRef.current);
+        compositeTimerRef.current = null;
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (_) {}
+      }
+    };
+  }, []);
 
   // Synchronize state when query parameters change (e.g., navigating from ExplorerPage with new target or epoch)
   useEffect(() => {
@@ -290,9 +313,13 @@ export default function ScenePage() {
     const fA = getFrameBuffer(0);
     const fB = getFrameBuffer(lastEpochIdx);
 
-    const renderToCanvas = (targetCtx, buffer) => {
+    const renderToCanvas = (targetCtx, buffer, isSecondary = false) => {
       const stretched = applyStretch(buffer, stretch, gain);
-      const imgData = targetCtx.createImageData(size, size);
+      const imgDataRef = isSecondary ? imageDataSecondaryRef : imageDataPrimaryRef;
+      if (!imgDataRef.current || imgDataRef.current.width !== size || imgDataRef.current.height !== size) {
+        imgDataRef.current = targetCtx.createImageData(size, size);
+      }
+      const imgData = imgDataRef.current;
       const data = imgData.data;
       for (let i = 0; i < stretched.length; i++) {
         const [r, g, b] = mapColormap(stretched[i], colormap);
@@ -306,7 +333,7 @@ export default function ScenePage() {
     };
 
     if (isSideBySide) {
-      renderToCanvas(ctx, fA);
+      renderToCanvas(ctx, fA, false);
       const canvasB = canvasSecondaryRef.current;
       if (canvasB) {
         if (canvasB.width !== size) {
@@ -314,7 +341,7 @@ export default function ScenePage() {
           canvasB.height = size;
         }
         const ctxB = canvasB.getContext('2d');
-        renderToCanvas(ctxB, fB);
+        renderToCanvas(ctxB, fB, true);
       }
       return;
     }
@@ -372,7 +399,28 @@ export default function ScenePage() {
         setIsPlaying(true);
       }
 
-      const stream = canvas.captureStream(30);
+      let recordCanvas = canvas;
+      if (viewMode === 'side-by-side' && canvasSecondaryRef.current) {
+        const compositeCanvas = document.createElement('canvas');
+        compositeCanvas.width = 1024;
+        compositeCanvas.height = 512;
+        const compCtx = compositeCanvas.getContext('2d');
+
+        const drawComposite = () => {
+          if (canvasRef.current) {
+            compCtx.drawImage(canvasRef.current, 0, 0, 512, 512);
+          }
+          if (canvasSecondaryRef.current) {
+            compCtx.drawImage(canvasSecondaryRef.current, 512, 0, 512, 512);
+          }
+        };
+        drawComposite();
+        if (compositeTimerRef.current) clearInterval(compositeTimerRef.current);
+        compositeTimerRef.current = setInterval(drawComposite, 1000 / 30);
+        recordCanvas = compositeCanvas;
+      }
+
+      const stream = recordCanvas.captureStream(30);
       let mimeType = 'video/webm';
       let fileExt = 'webm';
       if (typeof MediaRecorder.isTypeSupported === 'function') {
@@ -402,6 +450,14 @@ export default function ScenePage() {
       };
 
       recorder.onstop = () => {
+        if (compositeTimerRef.current) {
+          clearInterval(compositeTimerRef.current);
+          compositeTimerRef.current = null;
+        }
+        if (recordTimerRef.current) {
+          clearInterval(recordTimerRef.current);
+          recordTimerRef.current = null;
+        }
         const actualType = recorder.mimeType || mimeType || 'video/mp4';
         const blob = new Blob(recordedChunksRef.current, { type: actualType });
         const url = URL.createObjectURL(blob);
@@ -419,16 +475,28 @@ export default function ScenePage() {
       setIsRecording(true);
       setRecordProgress(1);
 
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
       let count = 1;
-      const progressTimer = setInterval(() => {
+      recordTimerRef.current = setInterval(() => {
         count += 1;
         setRecordProgress(count);
         if (count >= 5) {
-          clearInterval(progressTimer);
+          if (recordTimerRef.current) {
+            clearInterval(recordTimerRef.current);
+            recordTimerRef.current = null;
+          }
           recorder.stop();
         }
       }, 1000);
     } catch (err) {
+      if (compositeTimerRef.current) {
+        clearInterval(compositeTimerRef.current);
+        compositeTimerRef.current = null;
+      }
+      if (recordTimerRef.current) {
+        clearInterval(recordTimerRef.current);
+        recordTimerRef.current = null;
+      }
       console.error('Failed to capture canvas clip:', err);
       alert('Video clip recording is not supported in this browser.');
       setIsRecording(false);

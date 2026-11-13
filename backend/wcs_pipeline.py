@@ -47,7 +47,7 @@ def reproject_to_tangent_grid(
         coords,
         order=1,
         mode="constant",
-        cval=0.11,
+        cval=0.0,
     )
     return regridded.astype(np.float32), target_wcs
 
@@ -56,16 +56,26 @@ def quantize_to_uint16(flux: np.ndarray) -> Tuple[bytes, float, float]:
     """
     Linearly quantize physical float32 flux into uint16 [0, 65535]
     using robust p0.05 / p99.95 percentiles to preserve sky variance.
+    Handles NaNs and infinities gracefully with zero-safe fallbacks.
     """
-    f_min = float(np.percentile(flux, 0.05))
-    f_max = float(np.percentile(flux, 99.95))
-    if f_max <= f_min:
-        f_max = f_min + 1e-6
+    clean_flux = np.nan_to_num(flux, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    try:
+        f_min = float(np.nanpercentile(clean_flux, 0.05))
+        f_max = float(np.nanpercentile(clean_flux, 99.95))
+    except Exception:
+        f_min, f_max = 0.0, 1.0
+
+    if np.isnan(f_min) or np.isinf(f_min):
+        f_min = 0.0
+    if np.isnan(f_max) or np.isinf(f_max) or f_max <= f_min:
+        f_max = f_min + 1.0
 
     bscale = (f_max - f_min) / 65535.0
+    if bscale == 0.0 or np.isnan(bscale) or np.isinf(bscale):
+        bscale = 1.0 / 65535.0
     bzero = f_min
 
-    scaled = np.floor((flux - bzero) / bscale + 0.5)
+    scaled = np.floor((clean_flux - bzero) / bscale + 0.5)
     quantized = np.clip(scaled, 0, 65535).astype("<u2")
     return quantized.tobytes(), bscale, bzero
 
@@ -87,9 +97,10 @@ def build_wcs_headers(
     provenance: str,
     band_index: int,
     wavelength_um: float,
+    is_reprojected: bool = False,
 ) -> Dict[str, str]:
     cdelt = pixel_scale_arcsec / 3600.0
-    return {
+    headers = {
         "X-Raster-Dimensions": f"{width},{height}",
         "X-Raster-Bitpix": "16",
         "X-BSCALE": f"{bscale:.6e}",
@@ -104,6 +115,9 @@ def build_wcs_headers(
         "X-Band-Index": str(band_index),
         "X-Band-Wavelength-Um": f"{wavelength_um:.3f}",
     }
+    if is_reprojected:
+        headers["X-WCS-Reprojected"] = "true"
+    return headers
 
 
 def psf_matched_diff(

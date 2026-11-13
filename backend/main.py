@@ -59,6 +59,7 @@ app.add_middleware(
         "X-Band-Wavelength-Um",
         "X-Channel-Count",
         "X-Diff-Confidence",
+        "X-WCS-Reprojected",
     ],
 )
 
@@ -175,7 +176,9 @@ async def _process_cutout_job(
                         fov_arcmin,
                         True,
                     )
-                    raw_u16, bscale, bzero = await asyncio.to_thread(quantize_to_uint16, flux)
+                    is_reproj = bool(getattr(flux, "is_reprojected", False))
+                    clean_flux = np.nan_to_num(flux, nan=0.0).astype(np.float32)
+                    raw_u16, bscale, bzero = await asyncio.to_thread(quantize_to_uint16, clean_flux)
                     wavelength_um = 0.75 + (max(1, min(102, band_idx)) - 1) / 101.0 * 4.25
                     headers = build_wcs_headers(
                         width=size,
@@ -189,6 +192,7 @@ async def _process_cutout_job(
                         provenance=provenance,
                         band_index=band_idx,
                         wavelength_um=wavelength_um,
+                        is_reprojected=is_reproj,
                     )
                     raster_cache.put(cache_key, raw_u16, headers)
 
@@ -301,12 +305,20 @@ async def compute_diff(req: DiffRequest):
     w, h = w_a, h_a
     img_a = dequantize_uint16(bytes_a, (h, w), float(hdr_a["X-BSCALE"]), float(hdr_a["X-BZERO"]))
     img_b = dequantize_uint16(bytes_b, (h, w), float(hdr_b["X-BSCALE"]), float(hdr_b["X-BZERO"]))
+    img_a = np.nan_to_num(img_a, nan=0.0)
+    img_b = np.nan_to_num(img_b, nan=0.0)
 
     diff_img, confidence = await asyncio.to_thread(psf_matched_diff, img_a, img_b, req.kernel)
+    diff_img = np.nan_to_num(diff_img, nan=0.0)
     raw_u16, bscale, bzero = await asyncio.to_thread(quantize_to_uint16, diff_img)
 
     ra, dec = (float(x) for x in hdr_a["X-WCS-CRVAL"].split(","))
     cdelt = abs(float(hdr_a["X-WCS-CDELT"].split(",")[0])) * 3600.0
+    is_reproj = (
+        hdr_a.get("X-WCS-Reprojected") == "true"
+        or "reproject" in hdr_a.get("X-Survey-Provenance", "").lower()
+        or "unwise" in hdr_a.get("X-Survey-Provenance", "").lower()
+    )
     headers = build_wcs_headers(
         width=w,
         height=h,
@@ -319,6 +331,7 @@ async def compute_diff(req: DiffRequest):
         provenance=f"{hdr_a['X-Survey-Provenance']}-PSF-Diff",
         band_index=int(hdr_a["X-Band-Index"]),
         wavelength_um=float(hdr_a["X-Band-Wavelength-Um"]),
+        is_reprojected=is_reproj,
     )
     headers["X-Diff-Confidence"] = f"{confidence:.4f}"
     return Response(content=raw_u16, media_type="application/octet-stream", headers=headers)
@@ -333,7 +346,15 @@ async def export_fits(cache_key: str):
     raw_bytes, hdr = entry
     w, h = (int(x) for x in hdr["X-Raster-Dimensions"].split(","))
     flux = dequantize_uint16(raw_bytes, (h, w), float(hdr["X-BSCALE"]), float(hdr["X-BZERO"]))
-    flux_fits = np.flipud(flux)
+    flux = np.nan_to_num(flux, nan=0.0)
+
+    # Do not flip WCS-reprojected data that is already in standard FITS row-major orientation
+    is_reprojected = (
+        hdr.get("X-WCS-Reprojected") == "true"
+        or "reproject" in hdr.get("X-Survey-Provenance", "").lower()
+        or "unwise" in hdr.get("X-Survey-Provenance", "").lower()
+    )
+    flux_fits = flux if is_reprojected else np.flipud(flux)
 
     ra, dec = (float(x) for x in hdr["X-WCS-CRVAL"].split(","))
     cdelt_x, cdelt_y = (float(x) for x in hdr["X-WCS-CDELT"].split(","))

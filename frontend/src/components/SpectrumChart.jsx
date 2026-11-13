@@ -19,15 +19,19 @@ export default function SpectrumChart({
   const minW = 0.75;
   const maxW = 5.0;
 
+  const safeBands = Array.isArray(bands) ? bands : [];
+  const safeWiseBands = Array.isArray(wiseBands) ? wiseBands : [];
+
   const maxFlux = Math.max(
     1,
-    ...(inSpherexFootprint ? bands.map((b) => b.flux + b.err) : wiseBands.map((w) => w.flux * 1.35))
+    ...(inSpherexFootprint
+      ? safeBands.map((b) => (b && typeof b.flux === 'number' ? b.flux + (b.err || 0) : 1))
+      : safeWiseBands.map((w) => (w && typeof w.flux === 'number' ? w.flux * 1.35 : 1)))
   );
 
   const xOf = (w) => pad.left + ((w - minW) / (maxW - minW)) * plotW;
   const yOf = (f) => pad.top + plotH - (f / maxFlux) * plotH;
 
-  const safeBands = Array.isArray(bands) ? bands : [];
   const linePath = safeBands
     .map((b, i) => `${i === 0 ? 'M' : 'L'} ${xOf(b.wavelength).toFixed(1)} ${yOf(b.flux).toFixed(1)}`)
     .join(' ');
@@ -173,7 +177,7 @@ export default function SpectrumChart({
         {inSpherexFootprint ? (
           <path d={linePath} fill="none" stroke="#eceae4" strokeWidth="1.6" />
         ) : (
-          wiseBands.map((wb) => {
+          safeWiseBands.map((wb) => {
             const cx = xOf(wb.wavelength);
             const cy = yOf(wb.flux);
             const xLeft = xOf(wb.wavelength - wb.halfWidth);

@@ -171,6 +171,94 @@ def test_irsa_tap_hook():
         data = resp.json()
         assert data["status"] in ("success", "offline_fallback")
         assert len(data["sources"]) >= 1
+        if data["status"] == "offline_fallback":
+            assert "message" in data
+
+
+def test_nan_handling_quantization():
+    from wcs_pipeline import dequantize_uint16, quantize_to_uint16
+
+    # Array containing NaNs, positive infinity, and negative infinity
+    nan_arr = np.array([[np.nan, 1.5, 2.0], [np.inf, -np.inf, 3.5]], dtype=np.float32)
+    raw_u16, bscale, bzero = quantize_to_uint16(nan_arr)
+
+    assert not np.isnan(bscale)
+    assert not np.isnan(bzero)
+    assert not np.isinf(bscale)
+    assert not np.isinf(bzero)
+    assert bscale > 0
+
+    dequant = dequantize_uint16(raw_u16, (2, 3), bscale, bzero)
+    assert not np.any(np.isnan(dequant))
+    assert not np.any(np.isinf(dequant))
+
+
+def test_reprojection_cval_padding():
+    from wcs_pipeline import build_tan_wcs, reproject_to_tangent_grid
+
+    src_wcs = build_tan_wcs(100.0, 0.0, 64, 64, pixel_scale_arcsec=1.0)
+    src_flux = np.ones((64, 64), dtype=np.float32) * 5.0
+    # Reproject to a distant target grid offset so pixels fall out of bounds
+    regridded, _ = reproject_to_tangent_grid(
+        src_flux, src_wcs, target_ra=100.2, target_dec=0.0, out_shape=(64, 64), pixel_scale_arcsec=1.0
+    )
+    # Edge/out-of-bounds pixels should be padded with cval=0.0
+    assert regridded[0, 0] == 0.0
+
+
+def test_irsa_tap_column_adaptation():
+    import asyncio
+    from moc_index import query_irsa_tap
+
+    # Test non-WISE table (e.g., 2MASS fp_psc)
+    res_2mass = asyncio.run(query_irsa_tap(ra=133.7951, dec=-7.2451, table="fp_psc"))
+    assert res_2mass["status"] in ("success", "offline_fallback")
+    if res_2mass["status"] == "offline_fallback":
+        assert "message" in res_2mass
+        # Non-wise fallback should not invent w1mpro
+        assert "w1mpro" not in res_2mass["sources"][0]
+
+    # Test WISE table
+    res_wise = asyncio.run(query_irsa_tap(ra=133.7951, dec=-7.2451, table="allwise_p3as_psd"))
+    assert res_wise["status"] in ("success", "offline_fallback")
+    if res_wise["status"] == "offline_fallback":
+        assert "w1mpro" in res_wise["sources"][0]
+
+
+def test_fits_export_orientation():
+    from astropy.io import fits
+    import io
+    from cache import BoundedLRUCache
+    from wcs_pipeline import build_wcs_headers, quantize_to_uint16
+    from main import raster_cache
+
+    # 1. Test WCS-reprojected raster (should NOT be flipped)
+    arr_reproj = np.arange(16, dtype=np.float32).reshape((4, 4))
+    raw_reproj, bscale, bzero = quantize_to_uint16(arr_reproj)
+    key_reproj = BoundedLRUCache.make_key("test_reproj_key_123456789")
+    headers_reproj = build_wcs_headers(
+        width=4,
+        height=4,
+        bscale=bscale,
+        bzero=bzero,
+        ra=10.0,
+        dec=20.0,
+        pixel_scale_arcsec=1.0,
+        epoch="2025-01",
+        provenance="unWISE-Archive",
+        band_index=1,
+        wavelength_um=3.4,
+        is_reprojected=True,
+    )
+    raster_cache.put(key_reproj, raw_reproj, headers_reproj)
+
+    with TestClient(app) as tc:
+        resp_reproj = tc.get(f"/api/export/fits?cache_key={key_reproj}")
+        assert resp_reproj.status_code == 200
+        with fits.open(io.BytesIO(resp_reproj.content)) as hdul:
+            data = hdul[0].data
+            # Reprojected data should preserve row order (row 0 stays row 0)
+            assert np.allclose(data[0], arr_reproj[0], atol=0.1)
 
 
 if __name__ == "__main__":

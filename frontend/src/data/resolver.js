@@ -39,7 +39,15 @@ export function resolveQueryToTarget(rawQuery, targets) {
   const parsed = parseCoordinateInput(q);
   if (parsed) {
     const { ra, dec } = parsed;
-    const inFootprint = Math.abs(dec) > 12 || (ra > 80 && ra < 260);
+    const d2r = Math.PI / 180;
+    const r2d = 180 / Math.PI;
+    const alphaG = 192.85948 * d2r;
+    const deltaG = 27.12825 * d2r;
+    const raRad = ra * d2r;
+    const decRad = dec * d2r;
+    const sinB = Math.sin(deltaG) * Math.sin(decRad) + Math.cos(deltaG) * Math.cos(decRad) * Math.cos(raRad - alphaG);
+    const galB = Math.asin(Math.max(-1, Math.min(1, sinB))) * r2d;
+    const inFootprint = Math.abs(galB) >= 6.0;
     return {
       id: `custom-${ra.toFixed(2)}-${dec.toFixed(2)}`,
       name: `J${ra.toFixed(3)}${dec >= 0 ? '+' : ''}${dec.toFixed(3)}`,

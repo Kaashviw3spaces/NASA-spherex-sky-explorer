@@ -1,5 +1,5 @@
 import { Component } from 'react';
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import HomePage from './pages/HomePage';
 import ExplorerPage from './pages/ExplorerPage';
@@ -61,6 +61,7 @@ export default function App() {
               <Route path="/scene" element={<ScenePage />} />
               <Route path="/targets" element={<TargetsPage />} />
               <Route path="/architecture" element={<ArchitecturePage />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </AppErrorBoundary>
         </main>

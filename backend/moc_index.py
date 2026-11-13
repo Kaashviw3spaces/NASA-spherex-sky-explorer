@@ -108,10 +108,17 @@ async def query_irsa_tap(
 ) -> dict:
     """
     Live NASA/IPAC IRSA TAP query hook for astronomical infrared catalog tables and SPHEREx DR1 tiles.
+    Dynamically adapts requested columns depending on target catalog table.
     """
     radius_deg = max(0.0001, min(0.1, radius_arcsec / 3600.0))
+    table_lower = table.lower()
+    if "allwise" in table_lower or "wise" in table_lower:
+        columns = "ra, dec, w1mpro, w2mpro"
+    else:
+        columns = "ra, dec"
+
     adql = (
-        f"SELECT TOP 10 ra, dec, w1mpro, w2mpro FROM {table} "
+        f"SELECT TOP 10 {columns} FROM {table} "
         f"WHERE CONTAINS(POINT('J2000', ra, dec), CIRCLE('J2000', {ra:.5f}, {dec:.5f}, {radius_deg:.6f})) = 1"
     )
     url = "https://irsa.ipac.caltech.edu/TAP/sync"
@@ -122,6 +129,7 @@ async def query_irsa_tap(
         "QUERY": adql,
     }
 
+    error_msg = None
     try:
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
             resp = await client.post(url, data=params)
@@ -141,25 +149,31 @@ async def query_irsa_tap(
                     "count": len(sources),
                     "sources": sources,
                 }
-    except Exception:
-        pass
+            else:
+                error_msg = f"IRSA TAP returned HTTP {resp.status_code}"
+    except httpx.TimeoutException:
+        error_msg = "NASA IRSA TAP request timed out after 8.0s; fell back to simulated DR1 catalog."
+    except Exception as exc:
+        error_msg = f"IRSA TAP query error: {str(exc)}"
 
     cov = check_spherex_moc(ra, dec)
+    fallback_source = {
+        "ra": ra,
+        "dec": dec,
+        "note": "Astrometric center seed (offline fallback)",
+    }
+    if "allwise" in table_lower or "wise" in table_lower:
+        fallback_source["w1mpro"] = round(11.2 + (ra % 4.0), 3)
+        fallback_source["w2mpro"] = round(10.8 + (abs(dec) % 3.0), 3)
+
     return {
         "status": "offline_fallback",
+        "message": error_msg or "IRSA query unavailable; using simulated fallback.",
         "provenance": "SPHEREx-TAP-Simulated" if cov["spherex_covered"] else "unWISE-TAP-Simulated",
         "table": table,
         "target": {"ra": ra, "dec": dec, "radius_arcsec": radius_arcsec},
         "count": 1,
-        "sources": [
-            {
-                "ra": ra,
-                "dec": dec,
-                "w1mpro": round(11.2 + (ra % 4.0), 3),
-                "w2mpro": round(10.8 + (abs(dec) % 3.0), 3),
-                "note": "Astrometric center seed",
-            }
-        ],
+        "sources": [fallback_source],
     }
 
 
@@ -175,6 +189,7 @@ def fetch_real_unwise_cutout(
     """
     Fetch genuine NASA unWISE/NEOWISE all-sky infrared FITS cutouts from the unWISE archive.
     Reprojects using Astropy WCS onto standardized 512x512 tangent-plane grid.
+    Replaces NaNs with zeros and tags array with is_reprojected attribute.
     """
     import io
     import tarfile
@@ -226,7 +241,8 @@ def fetch_real_unwise_cutout(
                     if member.name.endswith("-img-m.fits"):
                         fits_file = tar.extractfile(member)
                         with fits.open(fits_file) as hdul:
-                            src_flux = hdul[0].data
+                            raw_data = hdul[0].data
+                            src_flux = np.nan_to_num(raw_data.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
                             src_wcs = WCS(hdul[0].header)
 
                             pix_scale = (fov_arcmin * 60.0) / size
@@ -238,7 +254,9 @@ def fetch_real_unwise_cutout(
                                 out_shape=(size, size),
                                 pixel_scale_arcsec=pix_scale,
                             )
-                            return regridded.astype(np.float32)
+                            clean_regridded = np.nan_to_num(regridded, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+                            setattr(clean_regridded, "is_reprojected", True)
+                            return clean_regridded
     except Exception:
         return None
     return None
