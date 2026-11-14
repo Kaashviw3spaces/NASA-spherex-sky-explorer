@@ -140,25 +140,41 @@ Archive release names (`allwise`, `neo2`, `neo5`, `neo7`) are not precise observ
 
 ### Real SPHEREx integration
 
+Explore uses two separate paths: **context imagery for its main canvas**, and **real SPHEREx DR1 observations for dates, metadata, and supporting preview products**. The main spectrum remains a labeled teaching model. The sequence below describes the SPHEREx path only.
+
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"background": "#07090E", "primaryColor": "#132638", "primaryTextColor": "#E8EDF4", "primaryBorderColor": "#D8B26E", "lineColor": "#8BB8D4", "secondaryColor": "#193B3C", "tertiaryColor": "#2B243D", "fontFamily": "Arial"}}}%%
 sequenceDiagram
-    participant Browser
-    participant API as FastAPI
-    participant IRSA as NASA/IPAC IRSA
-    Browser->>API: GET /api/spherex/images?ra=...&dec=...
-    API->>IRSA: SIA2 query / spherex_dr1
-    IRSA-->>API: FITS URLs, exposure times, spectral ranges
-    API-->>Browser: Date-sorted observation records
-    Browser->>API: GET /api/spherex/cutout?url=...&ra=...&dec=...
-    API->>IRSA: Native FITS cutout request
-    IRSA-->>API: IMAGE, FLAGS, VARIANCE, spectral WCS and other HDUs
-    API->>API: Reproject image to common sky grid; retain missing support
-    API-->>Browser: Preview values, units, processing notes and metadata
-    Note over Browser,IRSA: Archive errors never become simulations in this API path
+    participant UI as Explore interface
+    participant API as FastAPI backend
+    participant Archive as NASA IPAC IRSA
+
+    UI->>API: GET /api/spherex/images with RA and Dec
+    API->>Archive: SIA2 query for collection spherex_dr1
+    alt Records available
+        Archive-->>API: Spectral image URLs, dates and detector wavelength ranges
+        API-->>UI: Date-sorted observation records
+        UI->>API: GET /api/spherex/cutout with source URL and coordinates
+        API->>Archive: Request native spectral FITS cutout
+        Archive-->>API: Multi-extension FITS file
+        API->>API: Read IMAGE and source units
+        API->>API: Reproject onto a common TAN sky grid
+        API->>API: Preserve missing coverage as null values
+        API-->>UI: Supporting preview and observation metadata
+        Note over UI: Main context image remains a separate data source
+    else No records returned
+        API-->>UI: Empty observation list
+        Note over UI: No DR1 result does not establish absence in other releases
+    end
+    Note over UI,Archive: Failed archive requests show an error, never a simulated SPHEREx replacement
 ```
 
-Discovery results are cached for 10 minutes, previews for one hour, with bounded in-process caches and concurrent-request coalescing. Preview downloads are limited to 32 MB. The frontend additionally retains a bounded recent-preview cache and can load comparison exposures concurrently. A first visit still depends on IRSA availability and download speed.
+Implementation: [`useSpherexFrames.js`](frontend/src/hooks/useSpherexFrames.js) → [`main.py`](backend/main.py) → [`spherex_archive.py`](backend/spherex_archive.py). [`DataNotice.jsx`](frontend/src/components/DataNotice.jsx) displays the selected SPHEREx metadata separately from the context-image source.
+
+- **Discovery:** DR1 only, up to 300 date-sorted records. The hook selects up to three exposures with the same detector-wide wavelength range. This does not guarantee matching wavelengths at every pixel.
+- **Preview:** 128×128 common TAN grid with bilinear interpolation, enlarged for display. Source FITS retains the original quality, variance, and spectral-WCS extensions. These are not propagated into preview uncertainties.
+- **Caching:** discovery results for 10 minutes and previews for one hour, with bounded in-process caches and duplicate-request coalescing. The frontend retains a bounded recent-preview cache and loads selected exposures concurrently.
+- **Errors:** cutout downloads are limited to 32 MB. Missing coverage stays empty and archive failures remain errors. First-time retrieval still depends on IRSA availability and download speed.
+- **Experimental extraction:** `/api/spherex/spectral-samples` is a separate exploratory extraction endpoint, not the source of the main Explore spectrum and not a chemical-identification pipeline.
 
 <a id="learning-design"></a>
 
