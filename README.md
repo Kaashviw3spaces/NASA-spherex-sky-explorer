@@ -151,7 +151,7 @@ Archive release names (`allwise`, `neo2`, `neo5`, `neo7`) are not precise observ
 
 ### Real SPHEREx integration
 
-Explore uses two separate paths: **context imagery for its main canvas**, and **real SPHEREx DR1 observations for dates, metadata, and supporting preview products**. The main spectrum is an interactive teaching model, clearly labeled as simulated. The sequence below describes the SPHEREx path only.
+Explore displays **real SPHEREx DR1 images and their own dates and metadata** when SPHEREx is selected. unWISE is a separate context-image option at the same coordinates. The optional SPHEREx graph reads measured native-pixel channels with statistical uncertainties. The sequence below describes the SPHEREx path only.
 
 ```mermaid
 sequenceDiagram
@@ -164,15 +164,21 @@ sequenceDiagram
     alt Records available
         Archive-->>API: Spectral image URLs, dates and detector wavelength ranges
         API-->>UI: Date-sorted observation records
-        Note over UI: Explore metadata stops here; preview API remains available
-        UI->>API: Optional GET /api/spherex/cutout with source URL and coordinates
+        Note over UI: Select distinct dated exposures
+        UI->>API: GET /api/spherex/cutout with source URL and coordinates
         API->>Archive: Request native spectral FITS cutout
         Archive-->>API: Multi-extension FITS file
-        API->>API: Read IMAGE and source units
+        API->>API: Read IMAGE and units, mask quality flags and invalid variance
         API->>API: Reproject onto a common TAN sky grid
         API->>API: Preserve missing coverage as null values
-        API-->>UI: Supporting preview and observation metadata
-        Note over UI: Main context image remains a separate data source
+        API-->>UI: Image pixels, spectral lookup and observation metadata
+        Note over UI: Compare using shared contrast and wavelength safeguards
+        opt Inspect infrared channels
+            UI->>API: GET /api/spherex/spectral-samples with stream enabled
+            API->>Archive: Retrieve native-pixel spectral image cutouts
+            Archive-->>API: IMAGE, VARIANCE, FLAGS and wavelength lookup
+            API-->>UI: Progressive measured samples and statistical errors
+        end
     else No records returned
         API-->>UI: Empty observation list
         Note over UI: No DR1 result does not establish absence in other releases
@@ -180,13 +186,13 @@ sequenceDiagram
     Note over UI,Archive: Failed archive requests show an error, never a simulated SPHEREx replacement
 ```
 
-Implementation: [`useSpherexFrames.js`](frontend/src/hooks/useSpherexFrames.js) → [`main.py`](backend/main.py) → [`spherex_archive.py`](backend/spherex_archive.py). [`DataNotice.jsx`](frontend/src/components/DataNotice.jsx) displays the selected SPHEREx metadata separately from the context-image source.
+Implementation: [`useSpherexFrames.js`](frontend/src/hooks/useSpherexFrames.js) → [`main.py`](backend/main.py) → [`spherex_archive.py`](backend/spherex_archive.py). [`DataNotice.jsx`](frontend/src/components/DataNotice.jsx) displays metadata for the selected image source.
 
-- **Discovery:** Explore retrieves dates and metadata directly from discovery without downloading SPHEREx image previews. DR1 only, up to 300 date-sorted records. The hook selects up to three exposures with the same detector-wide wavelength range. This does not guarantee matching wavelengths at every pixel.
+- **Discovery:** Explore queries DR1 for up to 300 date-sorted records, then downloads selected image previews. The hook selects up to three exposures with the same detector-wide wavelength range. The documented investigation pins two exact inputs. A shared detector range does not guarantee matching wavelengths at every pixel.
 - **Preview:** 128×128 common TAN grid with bilinear interpolation, enlarged for display. Source FITS retains the original quality, variance, and spectral-WCS extensions. These are not propagated into preview uncertainties.
 - **Caching:** discovery results for 10 minutes and previews for one hour, with bounded in-process caches and duplicate-request coalescing. The frontend retains a bounded recent-preview cache and loads selected exposures concurrently.
 - **Errors:** cutout downloads are limited to 32 MB. Missing coverage stays empty and archive failures remain errors. First-time retrieval still depends on IRSA availability and download speed.
-- **Spectrum:** the main Explore graph uses the same labeled simulation as the legacy viewer, with cursor, aperture, wavelength, marker and CSV/JSON controls. `/api/spherex/spectral-samples` remains available separately for exploratory native-pixel SPHEREx measurements; it is not connected to the main graph. That endpoint preserves source dates, units, passband widths and statistical uncertainties, and does not identify chemicals.
+- **Spectrum:** the optional Explore graph connects to `/api/spherex/spectral-samples` for measured native-pixel SPHEREx channels. It preserves source dates, units, passband widths and statistical uncertainties. Coverage is incomplete and foreground light remains. Reference markers do not identify chemicals. Teaching spectra remain separately labelled in Learn and Experiments.
 
 <a id="learning-design"></a>
 
@@ -206,7 +212,7 @@ flowchart LR
 - **Progressive explanations:** Understand → Explore → Science Behind It through reusable `Explanation.jsx`.
 - **Light lab:** traveling-wave schematic and adjacent-crest wavelength bracket. The glowing marker is a crest, not a photon trajectory.
 - **Spectrum lab:** generated continuum/dip, assigned color strip, and guided absorption inspection. No molecular identification is inferred.
-- **Image loupe:** processing and color demonstrations on one Webb image, not X-ray observations or another epoch/band.
+- **Image lessons:** real SPHEREx previews plus labelled illustrations explain observation inputs, motion versus misalignment, and foreground light. The optional infrared labs use educational models.
 - **Redshift experiment:** `λobserved = λrest × (1 + z)`, with a fixed rest-frame reference and adjustable shifted profile.
 - **Dust experiment:** `T = 10^(−0.4 Aλ)` and `Aλ = Aᵥ(λ / 0.55 µm)^(−1.7)`. This is an illustrative screen model, not a universal fitted extinction law. The separate visible-light ray demonstration extends that same assumption to 0.45 µm.
 - **Missions:** objectives are self-reported. A completed mission records learning, not a verified discovery.
