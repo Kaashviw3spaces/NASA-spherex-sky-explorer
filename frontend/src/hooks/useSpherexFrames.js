@@ -22,7 +22,7 @@ export default function useSpherexFrames(target, { metadataOnly = false } = {}) 
       if (metadataOnly) {
         const frames = chosen.map(record => ({ meta: { dataKind: 'observed', provenance: 'SPHEREx / NASA-IPAC IRSA', release: 'DR1', epoch: record.date + ' UTC', sourceUrl: record.url, spectralRange: `${record.minUm}–${record.maxUm} µm` } }));
         previewCache.delete(key); previewCache.set(key, { frames, savedAt: Date.now() });
-        while (previewCache.size > 4) previewCache.delete(previewCache.keys().next().value);
+        while (previewCache.size > 12) previewCache.delete(previewCache.keys().next().value);
         if (!controller.signal.aborted) setState({ key, frames, status: 'ready', error: '' });
         return;
       }
@@ -38,7 +38,7 @@ export default function useSpherexFrames(target, { metadataOnly = false } = {}) 
           const dx = sx - x0, dy = sy - y0;
           buffer[y * 512 + x] = corners.every(v => v !== null && Number.isFinite(v)) ? corners[0] * (1-dx) * (1-dy) + corners[1] * dx * (1-dy) + corners[2] * (1-dx) * dy + corners[3] * dx * dy : NaN;
         }
-        loaded.set(index, { buffer, meta: { width: 512, height: 512, gridWidth: image.width, gridHeight: image.height, dataKind: 'observed', provenance: 'SPHEREx / NASA-IPAC IRSA', release: 'DR1', epoch: record.date + ' UTC', bunit: image.unit, sourceUrl: record.url, wavelengthUm: (record.minUm + record.maxUm) / 2, bandIndex: 0, spectralRange: `${record.minUm}–${record.maxUm} µm`, processing: image.processing } });
+        loaded.set(index, { buffer, cache_key: image.cache_key, spectral: image.spectral, qualityApplied: image.qualityApplied, nativePixels: image.pixels, meta: { width: 512, height: 512, gridWidth: image.width, gridHeight: image.height, dataKind: 'observed', provenance: 'SPHEREx / NASA-IPAC IRSA', release: 'DR1', epoch: record.date + ' UTC', bunit: image.unit, sourceUrl: record.url, wavelengthUm: (record.minUm + record.maxUm) / 2, bandIndex: 0, spectralRange: `${record.minUm}–${record.maxUm} µm`, processing: image.processing } });
         const frames = [...loaded.entries()].sort((a, b) => a[0] - b[0]).map(([, frame]) => frame);
         if (!controller.signal.aborted) setState({ key, frames, status: 'loading', error: '' });
       }));
@@ -46,7 +46,7 @@ export default function useSpherexFrames(target, { metadataOnly = false } = {}) 
       const frames = [...loaded.entries()].sort((a, b) => a[0] - b[0]).map(([, frame]) => frame);
       if (outcomes.some(result => result.status === 'rejected')) throw Error('Some exposures could not be retrieved. Retry to load missing images.');
       previewCache.delete(key); previewCache.set(key, { frames, savedAt: Date.now() });
-      while (previewCache.size > 4) previewCache.delete(previewCache.keys().next().value);
+      while (previewCache.size > 12) previewCache.delete(previewCache.keys().next().value);
       setState({ key, frames, status: 'ready', error: '' });
     })().catch(error => { if (!controller.signal.aborted) setState(previous => ({ key, frames: previous?.key === key ? previous.frames : [], status: 'error', error: previous?.frames?.length ? 'Some additional exposures could not be retrieved. Loaded observations remain available.' : error.message })); });
     return () => controller.abort();

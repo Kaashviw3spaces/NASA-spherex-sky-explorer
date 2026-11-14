@@ -1173,3 +1173,17 @@ html { scrollbar-color: #34465c #060b14; }
 
 .choreographed-story .story-steps { row-gap: 10px; }
 .choreographed-story .story-explore-link { display: flex; width: fit-content; margin-top: 28px; }
+
+.difference-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.comparison-inputs { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-bottom: 12px; padding-block: 10px; border-block: 1px solid var(--border-hairline); }
+.comparison-inputs > div { display: grid; gap: 3px; font: 10px/1.6 var(--font-mono); color: var(--text-secondary); }
+.comparison-inputs strong { color: var(--accent-amber); font-weight: 500; }
+
+.celestial-globe { background: #070b13; border: 1px solid var(--border-hairline); border-radius: 5px; overflow: hidden; }
+.celestial-globe-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px; }
+.celestial-globe-heading .eyebrow { color: var(--accent-amber); font-size: 9px; }
+.celestial-globe canvas { cursor: grab; }
+.celestial-globe canvas:active { cursor: grabbing; }
+.globe-readout { text-align: center; font: 11px var(--font-mono); color: var(--text-secondary); }
+.celestial-globe > .quiet-note { text-align: center; padding: 0 12px; font-size: 10px; }
+.globe-targets { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; padding: 8px 12px; }

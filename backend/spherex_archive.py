@@ -72,6 +72,13 @@ def decode_image(content, ra=None, dec=None, fov=5):
         data = np.asarray(image.data, dtype=float)
         if data.ndim != 2 or data.size > 1_000_000:
             raise ValueError('Unexpected spectral image dimensions.')
+        quality_applied = 'FLAGS' in hdus and 'VARIANCE' in hdus
+        if quality_applied:
+            flags = np.asarray(hdus['FLAGS'].data, dtype=np.int64)
+            variance = np.asarray(hdus['VARIANCE'].data, dtype=float)
+            valid = ((flags & ~((1 << 21) | (1 << 12))) == 0) & np.isfinite(variance) & (variance >= 0)
+            data = np.where(valid, data, np.nan)
+        spectral = None
         processing = 'Native cutout; not aligned.'
         if ra is not None and dec is not None:
             source_wcs = WCS(image.header).celestial
@@ -84,11 +91,18 @@ def decode_image(content, ra=None, dec=None, fov=5):
             support = map_coordinates(np.isfinite(data).astype(float), coords, order=1, mode='constant', cval=0)
             sampled = map_coordinates(np.nan_to_num(data), coords, order=1, mode='constant', cval=0)
             data = np.where(support > .999, sampled, np.nan)
+            try:
+                wave = WCS(image.header, hdus, key='W')
+                wave.sip = None
+                values = wave.all_pix2world(np.column_stack([sx.ravel(), sy.ravel()]), 0).reshape(128, 128, 2)
+                spectral = np.where(np.isfinite(values), values, None).tolist()
+            except (KeyError, ValueError, TypeError):
+                spectral = None
             processing = '128 × 128 common north-up TAN grid; bilinear interpolation, not integrated-flux conserving. Shared display stretch for comparisons. Quality flags and variance are in source FITS, not applied to this preview.'
         finite = np.isfinite(data)
         # Preserve invalid pixels as null, not a fabricated zero measurement.
         pixels = np.where(finite, data, None).tolist()
-        return {'pixels': pixels, 'width': data.shape[1], 'height': data.shape[0], 'unit': str(image.header.get('BUNIT', 'unknown')), 'wcs': image.header.tostring(sep='\n'), 'extensions': [h.name for h in hdus], 'uncertainty': 'VARIANCE extension available in the source FITS; not rendered', 'processing': processing}
+        return {'pixels': pixels, 'spectral': spectral, 'qualityApplied': quality_applied, 'width': data.shape[1], 'height': data.shape[0], 'unit': str(image.header.get('BUNIT', 'unknown')), 'wcs': image.header.tostring(sep='\n'), 'extensions': [h.name for h in hdus], 'uncertainty': 'Statistical errors are not propagated through preview interpolation', 'processing': processing + (' Quality flags and invalid variances masked.' if quality_applied else ' Quality assessment unavailable.')}
 
 @cached_archive(32, 3600)
 async def cutout(url, ra, dec, fov):

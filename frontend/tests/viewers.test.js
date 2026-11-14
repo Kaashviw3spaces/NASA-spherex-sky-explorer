@@ -45,6 +45,11 @@ test('both viewers render custom pointings, valid defaults, and invalid-link err
   const mainExplorer = render('spherex', 'ra=10&dec=20');
   assert.match(mainExplorer, /Simulated spectrum · arbitrary units/);
   assert.match(mainExplorer, /Aperture Radius/);
+  assert.ok(mainExplorer.indexOf('id="spectrum"') < mainExplorer.indexOf('id="explore-sky-map"'));
+  assert.match(mainExplorer, /Illustrated stars · ICRS coordinate grid/);
+  assert.doesNotMatch(mainExplorer, /coverage unverified/i);
+  assert.match(mainExplorer, /aria-label="Image subtraction"/);
+  assert.match(mainExplorer, /PSF difference/);
   assert.doesNotMatch(mainExplorer, /Measure at cursor|SPHEREx · measured samples/);
   const measuredChart = renderMeasured();
   assert.match(measuredChart, /Measured SPHEREx samples wavelength/);
@@ -67,6 +72,11 @@ test('both viewers render custom pointings, valid defaults, and invalid-link err
   assert.match(render('library', ''), /Write an entry/);
   const frames = ['FIRST_RELEASE', 'SELECTED_RELEASE'].map(release => ({ meta: { release, provenance: 'unWISE-Archive', dataKind: 'observed', epoch: 'unknown', bunit: 'unknown', bandIndex: 1, wavelengthUm: 3.4, width: 512, height: 512, sourceUrl: 'https://unwise.me/cutout_fits' } }));
   const dataPanel = renderData({ frames, activeIndex: 1 });
+  const metadataOnly = renderData({ scienceOnly: true, spherex: true, frames: [{ meta: { dataKind: 'observed', release: 'DR1', epoch: '2025-08-15 UTC', spectralRange: '1.63–2.43 µm' } }] });
+  assert.match(metadataOnly, /DR1/);
+  assert.match(metadataOnly, /15 Aug 2025/);
+  assert.match(metadataOnly, /1.63–2.43/);
+  assert.doesNotMatch(metadataOnly, /Pixel units|Raster|Sky reference|Spectrum: simulation/);
   assert.match(dataPanel, /SELECTED_RELEASE/);
   assert.doesNotMatch(dataPanel, /FIRST_RELEASE/);
   assert.match(dataPanel, /Not supplied/);

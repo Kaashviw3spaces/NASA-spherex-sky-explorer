@@ -37,7 +37,7 @@ This is an independent educational project inspired by NASA’s SPHEREx mission.
 | Experience | Route | What it provides |
 | --- | --- | --- |
 | Home | `/` | Scroll-scrubbed mission introduction, target search, and discovery links |
-| Explore | `/explorer` | Context imagery, SPHEREx observation dates and metadata, comparison modes, and an interactive teaching spectrum |
+| Explore | `/explorer` | Switch between SPHEREx and unWISE at the same coordinates; compare dated inputs and save conclusions; interactive teaching spectrum |
 | Field guide | `/learn` | Progressive explanations, a traveling-wave lab, simulated spectrum, image-processing loupe, and glossary |
 | Missions | `/missions` | Five guided investigations with objectives, checks, reflections, and local progress |
 | Experiments | `/experiments` | Interactive redshift, dust transmission, and spectrum models |
@@ -57,7 +57,8 @@ The app combines several **distinct** data paths. Observations, illustrations, a
 
 | Data or visual | Source and treatment | Important limit |
 | --- | --- | --- |
-| Explore and Scene Studio images | unWISE FITS retrieval, WCS reprojection, display stretch, and color mapping | Context imagery is not a SPHEREx exposure. Dates and units may be missing in the source. |
+| Explore images | SPHEREx DR1 or unWISE, chosen explicitly; common sky grid and display stretch | Each source retains its own dates, units and bands. Cross-survey switching is not a time comparison. |
+| Scene Studio images | unWISE context images | Scene Studio is separate from the SPHEREx viewer. |
 | Fallback image frames | Explicit `Synthetic-Demo` generation after archive retrieval fails | Simulated, arbitrary signal; no telescope observation date |
 | SPHEREx dates and metadata | NASA/IPAC IRSA SIA2 discovery of DR1 spectral images at the requested coordinates | Separate observations, not the context image’s capture dates |
 | SPHEREx preview API | Real IRSA FITS cutouts on a common 128×128 TAN sky grid | Bilinear interpolation is not integrated-flux conserving; previews are enlarged for display. |
@@ -72,7 +73,7 @@ SPHEREx covers approximately **0.75–5 µm in 102 spectral bands**; that does n
 
 The spectral-sample extraction accepts pixels with only the informational `SOURCE` and/or `FULLSAMPLE` flags, rejects other flags, and reports `sqrt(VARIANCE)` as statistical uncertainty. It does not perform PSF/aperture photometry, background subtraction, variability correction, a continuum fit, or abundance estimation. Its WCS-WAVE wavelengths are intended for visualization. Missing samples remain gaps.
 
-**Challenge scope:** the project supports public exploration and educational time comparison. It is not yet a validated SPHEREx motion-search or Planet X detection pipeline. The main observation viewport currently uses context imagery, while real SPHEREx products are available through the backend integration.
+**Challenge scope:** Explore supports real SPHEREx images and separate unWISE context imagery. Pixel quality and wavelength checks gate subtraction. This remains an educational preview tool, not a validated motion-search or Planet X detection pipeline. See [submission evidence and remaining checks](docs/submission-checks.md).
 
 References: [SPHEREx at NASA](https://science.nasa.gov/mission/spherex/), [IRSA SPHEREx archive](https://irsa.ipac.caltech.edu/Missions/spherex.html), [IRSA data access](https://caltech-ipac.github.io/spherex-archive-documentation/spherex-data-access/), [IRSA data products](https://caltech-ipac.github.io/spherex-archive-documentation/spherex-data-products/), [unWISE](https://unwise.me/).
 
@@ -84,7 +85,7 @@ References: [SPHEREx at NASA](https://science.nasa.gov/mission/spherex/), [IRSA 
 4. Explore the **simulated spectrum**: move over the context image, adjust the aperture and scrub wavelengths. Toggle reference markers and export the teaching values as CSV or JSON. These are not telescope measurements or chemical detections.
 5. Complete a mission, use a learning experiment, and save a reflection in the journal. Journal data stays in this browser; export a backup before changing devices.
 
-**Scope for judges:** this is an educational prototype with a real SPHEREx archive integration and separate context imagery. Because the main image comparison deliberately retains unWISE imagery, it does **not fully satisfy** the challenge requirement to compare SPHEREx images over time. It does not identify Planet X or infer chemical abundances.
+**Scope for judges:** this educational prototype compares actual SPHEREx exposures as well as separate unWISE context images. A real field investigation is documented, with remaining scientific validation, beginner-study and public-version checks explicitly listed. It does not identify Planet X or infer chemical abundances.
 
 <a id="architecture"></a>
 

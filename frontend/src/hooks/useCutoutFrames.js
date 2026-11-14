@@ -12,6 +12,7 @@ export default function useCutoutFrames(target) {
   useEffect(() => {
     const controller = new AbortController();
     const frames = getCachedCutouts(target.ra, target.dec, target.fovArcmin) || [];
+    if (frames.length && attempt === 0) { setResult({ key, frames, status: 'ready', error: '' }); return () => controller.abort(); }
     setResult({ key, frames, status: 'loading', error: '' });
     fetchCutoutsWithPolling({ ra: target.ra, dec: target.dec, fovArcmin: target.fovArcmin },
       (next, complete) => {
