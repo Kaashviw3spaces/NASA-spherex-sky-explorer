@@ -43,9 +43,9 @@ test('both viewers render custom pointings, valid defaults, and invalid-link err
   const code = built.output.find(item => item.type === 'chunk').code;
   const { render, renderData, renderMeasured } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
   const mainExplorer = render('spherex', 'ra=10&dec=20');
-  assert.match(mainExplorer, /SPHEREx · measured samples/);
-  assert.match(mainExplorer, /Measure at cursor/);
-  assert.doesNotMatch(mainExplorer, /Simulated spectrum · arbitrary units|Aperture Radius/);
+  assert.match(mainExplorer, /Simulated spectrum · arbitrary units/);
+  assert.match(mainExplorer, /Aperture Radius/);
+  assert.doesNotMatch(mainExplorer, /Measure at cursor|SPHEREx · measured samples/);
   const measuredChart = renderMeasured();
   assert.match(measuredChart, /Measured SPHEREx samples wavelength/);
   assert.match(measuredChart, /MJy\/sr/);

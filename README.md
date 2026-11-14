@@ -37,7 +37,7 @@ This is an independent educational project inspired by NASA’s SPHEREx mission.
 | Experience | Route | What it provides |
 | --- | --- | --- |
 | Home | `/` | Scroll-scrubbed mission introduction, target search, and discovery links |
-| Explore | `/explorer` | Context imagery, SPHEREx observation dates and metadata, comparison modes, and real SPHEREx spectral samples |
+| Explore | `/explorer` | Context imagery, SPHEREx observation dates and metadata, comparison modes, and an interactive teaching spectrum |
 | Field guide | `/learn` | Progressive explanations, a traveling-wave lab, simulated spectrum, image-processing loupe, and glossary |
 | Missions | `/missions` | Five guided investigations with objectives, checks, reflections, and local progress |
 | Experiments | `/experiments` | Interactive redshift, dust transmission, and spectrum models |
@@ -61,7 +61,8 @@ The app combines several **distinct** data paths. Observations, illustrations, a
 | Fallback image frames | Explicit `Synthetic-Demo` generation after archive retrieval fails | Simulated, arbitrary signal; no telescope observation date |
 | SPHEREx dates and metadata | NASA/IPAC IRSA SIA2 discovery of DR1 spectral images at the requested coordinates | Separate observations, not the context image’s capture dates |
 | SPHEREx preview API | Real IRSA FITS cutouts on a common 128×128 TAN sky grid | Bilinear interpolation is not integrated-flux conserving; previews are enlarged for display. |
-| Main Explore spectrum | SPHEREx native-pixel samples via `/api/spherex/spectral-samples` and `MeasuredSpectrum.jsx` | Partial, exploratory surface brightness with ±1σ errors; no chemical identification or fitted source spectrum |
+| Main Explore spectrum | Shared teaching-spectrum pipeline and `SpectrumChart.jsx` | Simulated, arbitrary units; responds to cursor position and aperture controls, not measured chemistry |
+| Optional spectral-sample API | `/api/spherex/spectral-samples` | Real but partial native-pixel SPHEREx samples with ±1σ errors; available through the API, not the main graph |
 | Legacy explorer and learning spectra | Explicitly labeled generated teaching curves | Simulations, not telescope measurements |
 | Catalog queries | IRSA TAP; default table `allwise_p3as_psd` | Failed queries return unavailable results, not invented sources. |
 | Sky map | Coordinate selection with illustrative shading | Not a verified SPHEREx coverage map |
@@ -80,7 +81,7 @@ References: [SPHEREx at NASA](https://science.nasa.gov/mission/spherex/), [IRSA 
 1. Open **Explore** and select a target or enter coordinates. Check the visible context-image source label.
 2. Use **Blink**, **Swipe**, or **Side-by-Side** to inspect the available context releases. These are not a SPHEREx time series, and missing dates remain unavailable.
 3. Read the separate **SPHEREx observation** selector for actual archive exposure dates at the requested coordinates.
-4. Inspect the **SPHEREx measured samples** graph. Click the image or choose **Measure at cursor** to request another sky position. Read uncertainties and dates; download the measurement CSV. Sparse coverage or an empty plot is an honest result.
+4. Explore the **simulated spectrum**: move over the context image, adjust the aperture and scrub wavelengths. Toggle reference markers and export the teaching values as CSV or JSON. These are not telescope measurements or chemical detections.
 5. Complete a mission, use a learning experiment, and save a reflection in the journal. Journal data stays in this browser; export a backup before changing devices.
 
 **Scope for judges:** this is an educational prototype with a real SPHEREx archive integration and separate context imagery. Because the main image comparison deliberately retains unWISE imagery, it does **not fully satisfy** the challenge requirement to compare SPHEREx images over time. It does not identify Planet X or infer chemical abundances.
@@ -150,7 +151,7 @@ Archive release names (`allwise`, `neo2`, `neo5`, `neo7`) are not precise observ
 
 ### Real SPHEREx integration
 
-Explore uses two separate paths: **context imagery for its main canvas**, and **real SPHEREx DR1 observations for dates, metadata, and supporting preview products**. The main spectrum plots real SPHEREx native-pixel samples independently of the context image. The sequence below describes the SPHEREx path only.
+Explore uses two separate paths: **context imagery for its main canvas**, and **real SPHEREx DR1 observations for dates, metadata, and supporting preview products**. The main spectrum is an interactive teaching model, clearly labeled as simulated. The sequence below describes the SPHEREx path only.
 
 ```mermaid
 sequenceDiagram
@@ -185,7 +186,7 @@ Implementation: [`useSpherexFrames.js`](frontend/src/hooks/useSpherexFrames.js) 
 - **Preview:** 128×128 common TAN grid with bilinear interpolation, enlarged for display. Source FITS retains the original quality, variance, and spectral-WCS extensions. These are not propagated into preview uncertainties.
 - **Caching:** discovery results for 10 minutes and previews for one hour, with bounded in-process caches and duplicate-request coalescing. The frontend retains a bounded recent-preview cache and loads selected exposures concurrently.
 - **Errors:** cutout downloads are limited to 32 MB. Missing coverage stays empty and archive failures remain errors. First-time retrieval still depends on IRSA availability and download speed.
-- **Spectrum:** `/api/spherex/spectral-samples` supplies the main Explore graph. Up to 12 exposures are sampled with bounded downloads and three concurrent requests. Click the context image or choose **Measure at cursor** to select a position; hovering alone does not launch slow archive requests. Measurements preserve dates, source FITS links, passband widths, quality flags and ±1σ uncertainties in the CSV. Missing samples stay empty. Reference markers are optional and never constitute chemical identifications. Failed requests can be retried; successful responses are cached by exact coordinates for ten minutes.
+- **Spectrum:** the main Explore graph uses the same labeled simulation as the legacy viewer, with cursor, aperture, wavelength, marker and CSV/JSON controls. `/api/spherex/spectral-samples` remains available separately for exploratory native-pixel SPHEREx measurements; it is not connected to the main graph. That endpoint preserves source dates, units, passband widths and statistical uncertainties, and does not identify chemicals.
 
 <a id="learning-design"></a>
 
