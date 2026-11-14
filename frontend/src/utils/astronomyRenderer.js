@@ -1,3 +1,5 @@
+import { computeCutLevels } from './displayLevels.js';
+
 function seededRandom(seed) {
   const s = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
   return s - Math.floor(s);
@@ -105,25 +107,14 @@ export function computeDifferenceBuffer(bufA, bufB) {
   return diff;
 }
 
-export function applyStretch(valOrBuf, stretch = 'zscale', gain = 1.0) {
+export function applyStretch(valOrBuf, stretch = 'zscale', gain = 1.0, levels = null) {
   if (typeof valOrBuf === 'number') {
     return Math.max(0, Math.min(1, valOrBuf * gain));
   }
   if (valOrBuf && valOrBuf.length !== undefined) {
     const totalPixels = valOrBuf.length;
     const out = new Float32Array(totalPixels);
-    const sampleCount = 512;
-    const step = Math.max(1, Math.floor(totalPixels / sampleCount));
-    const samples = new Float32Array(sampleCount);
-    let count = 0;
-    for (let i = 0; i < totalPixels && count < sampleCount; i += step) {
-      samples[count++] = valOrBuf[i];
-    }
-    samples.subarray(0, count).sort();
-
-    const zmin = samples[Math.floor(count * 0.02)];
-    const pHigh = samples[Math.floor(count * 0.995)];
-    const zmax = pHigh > zmin ? pHigh : zmin + 1.0;
+    const { zmin, zmax } = levels || computeCutLevels(valOrBuf, totalPixels);
 
     for (let i = 0; i < totalPixels; i++) {
       const u = Math.max(0, (valOrBuf[i] - zmin) / (zmax - zmin));
@@ -144,6 +135,10 @@ export function applyStretch(valOrBuf, stretch = 'zscale', gain = 1.0) {
 
 export function mapColormap(t, colormap = 'inferno') {
   const u = Math.max(0, Math.min(1, t));
+  if (colormap === 'grayscale') {
+    const c = Math.round(u * 255);
+    return [c, c, c];
+  }
   if (colormap === 'grayscale_r') {
     const c = Math.round((1 - u) * 242);
     return [c, c, c];

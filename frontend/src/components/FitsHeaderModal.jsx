@@ -1,9 +1,32 @@
+import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 
 export default function FitsHeaderModal({ meta, target, onClose }) {
+  const dialogRef = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const previous = document.activeElement;
+    const dialog = dialogRef.current;
+    dialog?.querySelector('button')?.focus();
+    const handleKey = event => {
+      if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); }
+      if (event.key === 'Tab') {
+        const items = [...dialog.querySelectorAll('button, a[href], input, select, [tabindex="0"]')];
+        const first = items[0], last = items.at(-1);
+        if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
+          event.preventDefault(); (event.shiftKey ? last : first)?.focus();
+        }
+      }
+    };
+    dialog?.addEventListener('keydown', handleKey);
+    return () => { dialog?.removeEventListener('keydown', handleKey); previous?.focus(); };
+  }, []);
   if (!meta) return null;
 
   const cards = [
+    ['DATKIND', meta.dataKind || 'unknown', 'Observed or simulated'],
+    ['RELEASE', meta.release || 'unknown', 'Archive release, not observation date'],
     ['SIMPLE', 'T', 'Standard FITS format'],
     ['BITPIX', String(meta.bitpix || -32), 'Bits per pixel'],
     ['NAXIS', '2', '2D WCS tangent-plane cutout'],
@@ -17,13 +40,14 @@ export default function FitsHeaderModal({ meta, target, onClose }) {
     ['CDELT', meta.cdelt || '-0.0017222,0.0017222', 'Pixel scale (deg/px)'],
     ['BSCALE', String(meta.bscale || 1.0), 'Linear quantization scale'],
     ['BZERO', String(meta.bzero || 0.0), 'Linear quantization offset'],
-    ['BUNIT', `'${meta.bunit || 'MJy/sr'}'`, 'Physical flux units'],
+    ['BUNIT', `'${meta.bunit || 'unknown'}'`, 'Physical flux units'],
     ['EPOCH', `'${meta.epoch || target.epochs[0]}'`, 'Observation timestamp'],
     ['SURVEY', `'${meta.provenance || target.survey}'`, 'Data provenance']
   ];
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label="FITS Header Inspector"
@@ -41,7 +65,7 @@ export default function FitsHeaderModal({ meta, target, onClose }) {
     >
       <div
         className="panel-box"
-        style={{ width: 'min(620px, 100%)', maxHeight: '80vh', overflow: 'auto', background: '#12151a' }}
+        style={{ width: 'min(620px, 100%)', maxHeight: '80vh', overflow: 'auto', background: '#0c1421' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="panel-header">
@@ -63,9 +87,9 @@ export default function FitsHeaderModal({ meta, target, onClose }) {
                 borderBottom: '1px solid #1d222b'
               }}
             >
-              <span style={{ color: '#e88d3a' }}>{k}</span>
-              <span style={{ color: '#eceae4' }}>{v}</span>
-              <span style={{ color: '#656d7a' }}>/ {c}</span>
+              <span style={{ color: '#d9b580' }}>{k}</span>
+              <span style={{ color: '#f0f2f5' }}>{v}</span>
+              <span style={{ color: '#8698ad' }}>/ {c}</span>
             </div>
           ))}
         </div>

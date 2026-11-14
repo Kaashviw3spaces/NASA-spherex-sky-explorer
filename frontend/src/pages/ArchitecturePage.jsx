@@ -4,27 +4,27 @@ import { ArrowRight } from 'lucide-react';
 const SUBSYSTEMS = [
   {
     layer: '01 · FastAPI Proxy & Two-Tier Cache',
-    spec: 'Hugging Face Spaces (2 vCPU / 16 GB RAM), in-memory LRU + bounded 500 MB disk cache',
+    spec: 'FastAPI, in-memory LRU and bounded disk raster cache',
     detail:
-      'Eliminates browser CORS blocks and IP rate-limiting against IPAC/IRSA/CDS. Evaluates SPHEREx Multi-Order Coverage (MOC) maps in O(1) time before upstream cutout fetching.'
+      'Proxies unWISE image requests and CDS name resolution. Explore retrieves SPHEREx metadata and previews for the requested coordinates, discovering DR1 observations through IRSA SIA2 and retrieves native spectral FITS cutouts. No global coverage map is loaded.'
   },
   {
     layer: '02 · WCS Tangent-Plane Reprojection',
-    spec: 'astropy.wcs + reproject (SPHEREx 6.2″/px & WISE 2.75″/px)',
+    spec: 'Astropy WCS + SciPy interpolation',
     detail:
-      'Regrids multi-instrument cutouts onto a common tangent-plane grid before transmission so image subtraction does not produce false dipolar artifacts.'
+      'Resamples unWISE pixels to a tangent-plane grid. Interpolation and percentile quantization alter pixels; artifacts remain possible.'
   },
   {
     layer: '03 · Progressive Client Ring Buffer',
-    spec: '512×512 capped Canvas/WebGL buffer + ZScale / Asinh / Log stretches',
+    spec: '512×512 Canvas 2D + worker display processing',
     detail:
-      'Streams a compact 408-byte 1D spectral vector and < 50 KB preview first (< 300 ms time-to-interactive), then loads multi-epoch frames into a phase-locked blink loop.'
+      'Polls image jobs and decodes binary rasters. The 408-byte spectrum is generated for education, not measured from these images.'
   },
   {
     layer: '04 · Dual-Mode Image Differencing',
     spec: 'Δ = (I₁ - μ₁)/σ₁ - (I₂ - μ₂)/σ₂',
     detail:
-      'Runs real-time normalized variance differencing in the browser for interactive scrubbing, paired with on-demand server-side PSF-matched subtraction.'
+      'Runs real-time normalized variance differencing in the browser for interactive scrubbing, paired with on-demand server-side fitted subtraction. The fit score is a heuristic, not a detection probability.'
   }
 ];
 
@@ -40,7 +40,7 @@ export default function ArchitecturePage() {
         overloading upstream NASA archive endpoints.
       </p>
 
-      <table className="data-table" style={{ marginBottom: 28 }}>
+      <div className="table-scroll"><table className="data-table" style={{ marginBottom: 28 }}>
         <thead>
           <tr>
             <th>Subsystem</th>
@@ -51,26 +51,26 @@ export default function ArchitecturePage() {
         <tbody>
           {SUBSYSTEMS.map((s) => (
             <tr key={s.layer}>
-              <td className="mono" style={{ fontSize: 12.5, color: '#e88d3a', whiteSpace: 'nowrap' }}>
+              <td className="mono" style={{ fontSize: 12.5, color: '#d9b580', whiteSpace: 'nowrap' }}>
                 {s.layer}
               </td>
-              <td className="mono" style={{ fontSize: 12, color: '#eceae4' }}>
+              <td className="mono" style={{ fontSize: 12, color: '#f0f2f5' }}>
                 {s.spec}
               </td>
-              <td style={{ color: '#98a0ad' }}>{s.detail}</td>
+              <td style={{ color: '#a7b5c6' }}>{s.detail}</td>
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
 
       <div className="panel-box" style={{ marginBottom: 28 }}>
         <div className="panel-header">
           <span className="panel-title">Deep-Link URL State Contract</span>
-          <span className="mono" style={{ fontSize: 11, color: '#656d7a' }}>
+          <span className="mono" style={{ fontSize: 11, color: '#8698ad' }}>
             RFC §2.D
           </span>
         </div>
-        <code className="mono" style={{ fontSize: 12.5, color: '#4ea8de', wordBreak: 'break-all' }}>
+        <code className="mono" style={{ fontSize: 12.5, color: '#8bb8d4', wordBreak: 'break-all' }}>
           /explorer?ra=133.7951&amp;dec=-7.2451&amp;fov=5.0&amp;epochA=2025-05&amp;epochB=2025-11&amp;mode=blink&amp;stretch=zscale
         </code>
       </div>

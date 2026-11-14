@@ -1,9 +1,11 @@
 export function parseCoordinateInput(rawQuery) {
   const q = rawQuery.trim();
-  const decMatch = q.match(/^(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)$/);
+  const decMatch = q.match(/^([+-]?\d+(?:\.\d+)?)[,\s]+([+-]?\d+(?:\.\d+)?)$/);
   if (decMatch) {
-    const ra = ((parseFloat(decMatch[1]) % 360) + 360) % 360;
-    const dec = Math.max(-90, Math.min(90, parseFloat(decMatch[2])));
+    const inputRa = parseFloat(decMatch[1]);
+    const ra = inputRa >= 0 && inputRa < 360 ? inputRa : ((inputRa % 360) + 360) % 360;
+    const dec = parseFloat(decMatch[2]);
+    if (!Number.isFinite(ra) || !Number.isFinite(dec) || Math.abs(dec) > 90) return null;
     return { ra, dec };
   }
 
@@ -20,7 +22,8 @@ export function parseCoordinateInput(rawQuery) {
     const d = Math.abs(parseInt(hmsMatch[4], 10));
     const am = parseInt(hmsMatch[5], 10);
     const as = parseFloat(hmsMatch[6]);
-    const dec = Math.max(-90, Math.min(90, sign * (d + am / 60 + as / 3600)));
+    const dec = sign * (d + am / 60 + as / 3600);
+    if (h > 23 || m > 59 || s >= 60 || am > 59 || as >= 60 || Math.abs(dec) > 90) return null;
     return { ra, dec };
   }
 
@@ -29,25 +32,18 @@ export function parseCoordinateInput(rawQuery) {
 
 export function resolveQueryToTarget(rawQuery, targets) {
   const q = rawQuery.trim();
-  if (!q) return targets[1];
+  if (!q) return null;
   const lower = q.toLowerCase();
   const byName = targets.find(
-    (t) => t.name.toLowerCase().includes(lower) || t.id.includes(lower)
+    (t) => t.name.toLowerCase() === lower ||
+           t.id.toLowerCase() === lower ||
+           t.name.toLowerCase().replace(/\s*\(fallback\)/i, '') === lower
   );
   if (byName) return byName;
 
   const parsed = parseCoordinateInput(q);
   if (parsed) {
     const { ra, dec } = parsed;
-    const d2r = Math.PI / 180;
-    const r2d = 180 / Math.PI;
-    const alphaG = 192.85948 * d2r;
-    const deltaG = 27.12825 * d2r;
-    const raRad = ra * d2r;
-    const decRad = dec * d2r;
-    const sinB = Math.sin(deltaG) * Math.sin(decRad) + Math.cos(deltaG) * Math.cos(decRad) * Math.cos(raRad - alphaG);
-    const galB = Math.asin(Math.max(-1, Math.min(1, sinB))) * r2d;
-    const inFootprint = Math.abs(galB) >= 6.0;
     return {
       id: `custom-${ra.toFixed(2)}-${dec.toFixed(2)}`,
       name: `J${ra.toFixed(3)}${dec >= 0 ? '+' : ''}${dec.toFixed(3)}`,
@@ -55,16 +51,12 @@ export function resolveQueryToTarget(rawQuery, targets) {
       dec,
       hmsDms: `${ra.toFixed(4)} deg, ${dec.toFixed(4)} deg`,
       fovArcmin: 5.0,
-      inSpherexFootprint: inFootprint,
-      survey: inFootprint ? 'SPHEREx 102-Band' : 'unWISE Multi-Epoch',
+      inSpherexFootprint: null,
+      survey: 'unWISE retrieval / simulated demo',
       properMotion: 'Custom Coordinate Query',
-      spectralNote: inFootprint
-        ? 'Regridded onto 6.2 arcsec/px WCS tangent-plane grid'
-        : 'Outside SPHEREx MOC; served via unWISE W1/W2 fallback',
-      dqFlag: 'NOMINAL',
-      epochs: inFootprint
-        ? ['2025-05', '2025-11', '2026-05', '2026-10']
-        : ['2014-03', '2017-09', '2020-03', '2023-09'],
+      spectralNote: 'Image availability is checked on request; spectrum is simulated.',
+      dqFlag: 'UNAVAILABLE',
+      epochs: ['allwise', 'neo2', 'neo5'],
       motionDxPerEpoch: ((ra * 13) % 7) - 3.5,
       motionDyPerEpoch: ((Math.abs(dec) * 7) % 6) - 3.0,
       variabilityAmp: 0.12,
@@ -72,5 +64,5 @@ export function resolveQueryToTarget(rawQuery, targets) {
       peakFluxMjy: 22.4
     };
   }
-  return targets[1];
+  return null;
 }

@@ -1,7 +1,10 @@
+import { computeCutLevels } from '../utils/displayLevels';
+
 // Web Worker for off-main-thread astronomical stretch, colormap, and variance diff
 
 const LUT_SIZE = 1024;
 const LUTS = {
+  grayscale: new Uint8ClampedArray(LUT_SIZE * 3),
   inferno: new Uint8ClampedArray(LUT_SIZE * 3),
   viridis: new Uint8ClampedArray(LUT_SIZE * 3),
   grayscale_r: new Uint8ClampedArray(LUT_SIZE * 3),
@@ -11,6 +14,8 @@ const LUTS = {
   for (let i = 0; i < LUT_SIZE; i++) {
     const u = i / (LUT_SIZE - 1);
     const offset = i * 3;
+
+    LUTS.grayscale[offset] = LUTS.grayscale[offset + 1] = LUTS.grayscale[offset + 2] = Math.round(u * 255);
 
     // grayscale_r
     const c = Math.round((1 - u) * 242);
@@ -31,23 +36,6 @@ const LUTS = {
     );
   }
 })();
-
-function computeCutLevels(buffer, totalPixels) {
-  const sampleCount = 512;
-  const step = Math.max(1, Math.floor(totalPixels / sampleCount));
-  const samples = new Float32Array(sampleCount);
-  let count = 0;
-  for (let i = 0; i < totalPixels && count < sampleCount; i += step) {
-    samples[count++] = buffer[i];
-  }
-  samples.subarray(0, count).sort();
-
-  const pLow = samples[Math.floor(count * 0.02)];
-  const pHigh = samples[Math.floor(count * 0.995)];
-  const zmin = pLow;
-  const zmax = pHigh > pLow ? pHigh : pLow + 1.0;
-  return { zmin, zmax };
-}
 
 function applyStretch(val, zmin, zmax, stretch, gain) {
   const norm = (val - zmin) / (zmax - zmin);
@@ -71,9 +59,10 @@ self.onmessage = (e) => {
   const lut = LUTS[colormap] || LUTS.inferno;
   const maxLutIndex = LUT_SIZE - 1;
 
-  const { zmin, zmax } = computeCutLevels(buffer, totalPixels);
+  const { zmin, zmax } = e.data.levels || computeCutLevels(buffer, totalPixels);
 
   for (let i = 0; i < totalPixels; i++) {
+    if (!Number.isFinite(buffer[i])) { rgba.set([27, 35, 49, 255], i * 4); continue; }
     const s = applyStretch(buffer[i], zmin, zmax, stretch, gain);
     const lutIdx = ((s * maxLutIndex + 0.5) | 0) * 3;
     const p = i << 2;
@@ -82,5 +71,5 @@ self.onmessage = (e) => {
     rgba[p + 2] = lut[lutIdx + 2];
     rgba[p + 3] = 255;
   }
-  self.postMessage({ id, rgba, width, height }, [rgba.buffer]);
+  self.postMessage({ id, rgba, width, height, label: e.data.label, requestKey: e.data.requestKey, version: e.data.version }, [rgba.buffer]);
 };

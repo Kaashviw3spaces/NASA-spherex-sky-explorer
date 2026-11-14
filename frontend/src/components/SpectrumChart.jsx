@@ -7,7 +7,10 @@ export default function SpectrumChart({
   inSpherexFootprint,
   activeWavelength,
   onSelectWavelength,
-  showLines
+  showLines,
+  measured = false,
+  markers = MOLECULAR_MARKERS,
+  hoverSelect = false
 }) {
   const svgRef = useRef(null);
   const W = 520;
@@ -30,7 +33,8 @@ export default function SpectrumChart({
   );
 
   const xOf = (w) => pad.left + ((w - minW) / (maxW - minW)) * plotW;
-  const yOf = (f) => pad.top + plotH - (f / maxFlux) * plotH;
+  const minFlux = measured ? Math.min(0, ...safeBands.map(b => b.flux - (b.err || 0))) : 0;
+  const yOf = (f) => pad.top + plotH - ((f - minFlux) / (maxFlux - minFlux)) * plotH;
 
   const linePath = safeBands
     .map((b, i) => `${i === 0 ? 'M' : 'L'} ${xOf(b.wavelength).toFixed(1)} ${yOf(b.flux).toFixed(1)}`)
@@ -61,17 +65,30 @@ export default function SpectrumChart({
       <svg
         ref={svgRef}
         viewBox={`0 0 ${W} ${H}`}
-        onClick={handlePointer}
-        onMouseMove={(e) => {
-          if (e.buttons === 1) handlePointer(e);
+        role="slider"
+        tabIndex={0}
+        aria-label={measured ? "Measured SPHEREx samples wavelength" : "Simulated spectrum wavelength"}
+        aria-valuemin={minW}
+        aria-valuemax={maxW}
+        aria-valuenow={activeWavelength}
+        aria-valuetext={`${activeWavelength.toFixed(2)} micrometers; ${measured ? "measured SPHEREx samples" : "simulated spectrum"}`}
+        onKeyDown={event => {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const next = event.key === 'Home' ? minW : event.key === 'End' ? maxW : activeWavelength + (event.key === 'ArrowRight' ? .02 : -.02);
+          onSelectWavelength(Number(Math.min(maxW, Math.max(minW, next)).toFixed(2)));
+        }}
+        onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); handlePointer(event); }}
+        onPointerMove={(e) => {
+          if (hoverSelect || e.buttons === 1) handlePointer(e);
         }}
         style={{
           width: '100%',
           height: 'auto',
           display: 'block',
           cursor: 'crosshair',
-          background: '#0b0d10',
-          border: '1px solid #232832'
+          background: '#060b14',
+          border: '1px solid #1c2b3d'
         }}
       >
         {/* Horizontal grid lines */}
@@ -105,7 +122,7 @@ export default function SpectrumChart({
               x={xOf(wTick)}
               y={H - 12}
               textAnchor="middle"
-              fill="#656d7a"
+              fill="#8698ad"
               fontSize="10"
               fontFamily="IBM Plex Mono, monospace"
             >
@@ -119,7 +136,7 @@ export default function SpectrumChart({
           x={pad.left - 8}
           y={pad.top + 8}
           textAnchor="end"
-          fill="#656d7a"
+          fill="#8698ad"
           fontSize="10"
           fontFamily="IBM Plex Mono, monospace"
         >
@@ -129,16 +146,16 @@ export default function SpectrumChart({
           x={pad.left - 8}
           y={H - pad.bottom}
           textAnchor="end"
-          fill="#656d7a"
+          fill="#8698ad"
           fontSize="10"
           fontFamily="IBM Plex Mono, monospace"
         >
-          0.0
+          {minFlux.toPrecision(3)}
         </text>
 
         {/* Molecular diagnostic markers with staggered non-overlapping badges */}
         {showLines &&
-          MOLECULAR_MARKERS.map((m, idx) => {
+          markers.map((m, idx) => {
             const mx = xOf(m.wavelength);
             const alignLeftOfLine = idx % 2 === 0;
             const rowY = idx % 2 === 0 ? pad.top + 13 : pad.top + 28;
@@ -161,7 +178,7 @@ export default function SpectrumChart({
                   y={rowY}
                   textAnchor={anchor}
                   fill={m.color}
-                  stroke="#0b0d10"
+                  stroke="#060b14"
                   strokeWidth="3"
                   paintOrder="stroke"
                   fontSize="9.5"
@@ -174,8 +191,12 @@ export default function SpectrumChart({
           })}
 
         {/* Spectrum trace or WISE broad-band fallback */}
-        {inSpherexFootprint ? (
-          <path d={linePath} fill="none" stroke="#eceae4" strokeWidth="1.6" />
+        {measured ? safeBands.map((b, index) => <g key={index}>
+          <line x1={xOf(b.wavelength)} x2={xOf(b.wavelength)} y1={yOf(b.flux - (b.err || 0))} y2={yOf(b.flux + (b.err || 0))} stroke="#98cbd7" />
+          <line x1={xOf(Math.max(minW, b.wavelength - (b.bandwidth || 0) / 2))} x2={xOf(Math.min(maxW, b.wavelength + (b.bandwidth || 0) / 2))} y1={yOf(b.flux)} y2={yOf(b.flux)} stroke="#98cbd7" />
+          <circle cx={xOf(b.wavelength)} cy={yOf(b.flux)} r="3" fill="#98cbd7" />
+        </g>) : inSpherexFootprint ? (
+          <path d={linePath} fill="none" stroke="#f0f2f5" strokeWidth="1.6" />
         ) : (
           safeWiseBands.map((wb) => {
             const cx = xOf(wb.wavelength);
@@ -189,17 +210,17 @@ export default function SpectrumChart({
                   y1={cy}
                   x2={xRight}
                   y2={cy}
-                  stroke="#e88d3a"
+                  stroke="#d9b580"
                   strokeWidth="2.5"
                 />
-                <line x1={xLeft} y1={cy - 4} x2={xLeft} y2={cy + 4} stroke="#e88d3a" strokeWidth="1.5" />
-                <line x1={xRight} y1={cy - 4} x2={xRight} y2={cy + 4} stroke="#e88d3a" strokeWidth="1.5" />
-                <circle cx={cx} cy={cy} r="4.5" fill="#e88d3a" />
+                <line x1={xLeft} y1={cy - 4} x2={xLeft} y2={cy + 4} stroke="#d9b580" strokeWidth="1.5" />
+                <line x1={xRight} y1={cy - 4} x2={xRight} y2={cy + 4} stroke="#d9b580" strokeWidth="1.5" />
+                <circle cx={cx} cy={cy} r="4.5" fill="#d9b580" />
                 <text
                   x={cx}
                   y={cy - 10}
                   textAnchor="middle"
-                  fill="#e88d3a"
+                  fill="#d9b580"
                   fontSize="10"
                   fontFamily="IBM Plex Mono, monospace"
                 >
@@ -210,13 +231,14 @@ export default function SpectrumChart({
           })
         )}
 
+        {measured && <text x={pad.left} y="12" fill="#98cbd7" fontSize="10">Surface brightness (MJy/sr) · ±1σ</text>}
         {/* Active wavelength scrubber */}
         <line
           x1={xOf(activeWavelength)}
           y1={pad.top}
           x2={xOf(activeWavelength)}
           y2={H - pad.bottom}
-          stroke="#e88d3a"
+          stroke="#d9b580"
           strokeWidth="1.2"
         />
         {inSpherexFootprint && activePoint && (
@@ -224,7 +246,7 @@ export default function SpectrumChart({
             cx={xOf(activePoint.wavelength)}
             cy={yOf(activePoint.flux)}
             r="3.5"
-            fill="#e88d3a"
+            fill="#d9b580"
           />
         )}
       </svg>
@@ -236,14 +258,14 @@ export default function SpectrumChart({
           marginTop: 8,
           fontFamily: 'IBM Plex Mono, monospace',
           fontSize: 11,
-          color: '#98a0ad'
+          color: '#a7b5c6'
         }}
       >
         <span>
-          Scrubber: <strong style={{ color: '#e88d3a' }}>{activeWavelength.toFixed(2)} µm</strong>
-          {inSpherexFootprint && activePoint ? ` · Band #${activePoint.bandId} (${activePoint.flux} mJy)` : ''}
+          Wavelength: <strong style={{ color: '#d9b580' }}>{activeWavelength.toFixed(2)} µm</strong>
+          {inSpherexFootprint && activePoint ? ` · Sample #${activePoint.bandId} (${activePoint.flux} ${measured ? "MJy/sr" : "arbitrary units"})` : ''}
         </span>
-        <span>Click or drag across plot to scrub bandpass</span>
+        <span>Hover, drag, or use arrow keys</span>
       </div>
     </div>
   );

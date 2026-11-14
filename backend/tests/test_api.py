@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import time
+import pytest
 import numpy as np
 from fastapi.testclient import TestClient
 
@@ -9,17 +10,28 @@ from main import app  # noqa: E402
 from wcs_pipeline import build_tan_wcs, reproject_to_tangent_grid  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolated_products(monkeypatch, tmp_path):
+    import main
+    import moc_index
+    from cache import BoundedLRUCache, JobStore
+    monkeypatch.setattr(main, "raster_cache", BoundedLRUCache(cache_dir=str(tmp_path)))
+    monkeypatch.setattr(main, "job_store", JobStore())
+    monkeypatch.setattr(moc_index, "fetch_real_unwise_cutout", lambda *args, **kwargs: None)
+
+
 def test_coverage_moc_check():
     with TestClient(app) as tc:
         r1 = tc.get("/api/coverage?ra=133.7951&dec=-7.2451")
         assert r1.status_code == 200
-        assert r1.json()["spherex_covered"] is True
-        assert r1.json()["moc_order"] == 10
+        assert r1.json()["spherex_covered"] is None
+        assert r1.json()["moc_order"] is None
+        assert r1.json()["coverage_status"] == "unavailable"
 
         r2 = tc.get("/api/coverage?ra=266.4168&dec=-29.0078")
         assert r2.status_code == 200
-        assert r2.json()["spherex_covered"] is False
-        assert r2.json()["unwise_fallback_available"] is True
+        assert r2.json()["spherex_covered"] is None
+        assert r2.json()["unwise_fallback_available"] is None
 
 
 def test_resolve_all_formats_and_benchmarks():
@@ -27,7 +39,7 @@ def test_resolve_all_formats_and_benchmarks():
         for name in ["Barnard's Star", "WISE 0855", "Epsilon Indi B", "RW Aurigae", "R Draconis"]:
             r = tc.get(f"/api/resolve?q={name}")
             assert r.status_code == 200
-            assert r.json()["spherex_covered"] is True
+            assert r.json()["spherex_covered"] is None
 
         # Decimal & HMS/DMS
         r_dec = tc.get("/api/resolve?q=133.7951,-7.2451")
@@ -169,9 +181,9 @@ def test_irsa_tap_hook():
         resp = tc.get("/api/tap/query?ra=269.4521&dec=4.6934&radius_arcsec=15.0")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] in ("success", "offline_fallback")
-        assert len(data["sources"]) >= 1
-        if data["status"] == "offline_fallback":
+        assert data["status"] in ("success", "unavailable")
+        assert data["count"] == len(data["sources"])
+        if data["status"] == "unavailable":
             assert "message" in data
 
 
@@ -212,17 +224,17 @@ def test_irsa_tap_column_adaptation():
 
     # Test non-WISE table (e.g., 2MASS fp_psc)
     res_2mass = asyncio.run(query_irsa_tap(ra=133.7951, dec=-7.2451, table="fp_psc"))
-    assert res_2mass["status"] in ("success", "offline_fallback")
-    if res_2mass["status"] == "offline_fallback":
+    assert res_2mass["status"] in ("success", "unavailable")
+    if res_2mass["status"] == "unavailable":
         assert "message" in res_2mass
         # Non-wise fallback should not invent w1mpro
-        assert "w1mpro" not in res_2mass["sources"][0]
+        assert res_2mass["sources"] == []
 
     # Test WISE table
     res_wise = asyncio.run(query_irsa_tap(ra=133.7951, dec=-7.2451, table="allwise_p3as_psd"))
-    assert res_wise["status"] in ("success", "offline_fallback")
-    if res_wise["status"] == "offline_fallback":
-        assert "w1mpro" in res_wise["sources"][0]
+    assert res_wise["status"] in ("success", "unavailable")
+    if res_wise["status"] == "unavailable":
+        assert res_wise["sources"] == []
 
 
 def test_fits_export_orientation():

@@ -1,8 +1,29 @@
+from urllib.parse import quote
+from dataclasses import dataclass
+import logging
 import math
 import re
 from typing import Dict, Optional
 import httpx
 import numpy as np
+
+
+logger = logging.getLogger(__name__)
+UNWISE_RELEASES = ("allwise", "neo2", "neo5", "neo7")
+
+
+@dataclass
+class CutoutProduct:
+    pixels: np.ndarray
+    data_kind: str
+    provenance: str
+    release: str
+    band: int
+    wavelength_um: float
+    epoch: str = "unknown"
+    bunit: str = "unknown"
+    source_url: str = ""
+    is_reprojected: bool = False
 
 
 BENCHMARK_CATALOG: Dict[str, dict] = {
@@ -24,11 +45,7 @@ def _match_benchmark(ra: float, dec: float) -> dict:
 
 
 def check_spherex_moc(ra: float, dec: float) -> dict:
-    """
-    O(1) spatial footprint check against SPHEREx MOC (order 10).
-    High-galactic-latitude regions and ecliptic poles are covered in primary survey;
-    crowded inner Galactic plane (|b| < 6 deg) routes to unWISE fallback.
-    """
+    """Legacy endpoint: report latitude only; no SPHEREx coverage map is loaded."""
     ra_rad = math.radians(ra)
     dec_rad = math.radians(dec)
     ngp_ra = math.radians(192.85948)
@@ -38,19 +55,16 @@ def check_spherex_moc(ra: float, dec: float) -> dict:
         + math.cos(dec_rad) * math.cos(ngp_dec) * math.cos(ra_rad - ngp_ra)
     )
     gal_b = math.degrees(math.asin(max(-1.0, min(1.0, sin_b))))
-    covered = abs(gal_b) >= 6.0
-
     return {
-        "spherex_covered": covered,
-        "primary_survey_epochs": (
-            ["2025-05-14T08:22:19Z", "2025-11-12T14:05:00Z", "2026-05-15T06:10:00Z"]
-            if covered
-            else []
-        ),
-        "unwise_fallback_available": True,
-        "moc_order": 10,
+        "spherex_covered": None,
+        "coverage_status": "unavailable",
+        "message": "No verified SPHEREx footprint is loaded. Latitude is not survey coverage.",
+        "primary_survey_epochs": [],
+        "unwise_fallback_available": None,
+        "moc_order": None,
         "galactic_b_deg": round(gal_b, 3),
     }
+
 
 
 async def resolve_target_query(query: str) -> Optional[dict]:
@@ -64,10 +78,12 @@ async def resolve_target_query(query: str) -> Optional[dict]:
         cov = check_spherex_moc(item["ra"], item["dec"])
         return {"name": q, "ra": item["ra"], "dec": item["dec"], **cov}
 
-    m = re.match(r"^(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)$", q)
+    m = re.match(r"^([+-]?\d+(?:\.\d+)?)[,\s]+([+-]?\d+(?:\.\d+)?)$", q)
     if m:
         ra = float(m.group(1)) % 360.0
-        dec = max(-90.0, min(90.0, float(m.group(2))))
+        dec = float(m.group(2))
+        if not math.isfinite(ra) or not math.isfinite(dec) or abs(dec) > 90:
+            return None
         cov = check_spherex_moc(ra, dec)
         return {"name": f"J{ra:.3f}{dec:+.3f}", "ra": ra, "dec": dec, **cov}
 
@@ -79,13 +95,15 @@ async def resolve_target_query(query: str) -> Optional[dict]:
         ra = ((int(hms.group(1)) + int(hms.group(2)) / 60 + float(hms.group(3)) / 3600) * 15.0) % 360.0
         sign = -1.0 if hms.group(4).startswith("-") else 1.0
         dec = sign * (abs(int(hms.group(4))) + int(hms.group(5)) / 60 + float(hms.group(6)) / 3600)
-        dec = max(-90.0, min(90.0, dec))
+        if (int(hms.group(1)) > 23 or int(hms.group(2)) > 59 or float(hms.group(3)) >= 60
+                or int(hms.group(5)) > 59 or float(hms.group(6)) >= 60 or abs(dec) > 90):
+            return None
         cov = check_spherex_moc(ra, dec)
         return {"name": q, "ra": round(ra, 6), "dec": round(dec, 6), **cov}
 
     try:
         async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-            resp = await client.get(f"https://cds.unistra.fr/cgi-bin/nph-sesame/-oxp/SNV?{q}")
+            resp = await client.get(f"https://cds.unistra.fr/cgi-bin/nph-sesame/-oxp/SNV?{quote(q, safe='')}")
             if resp.status_code == 200:
                 jra = re.search(r"<jradeg>([0-9.\-]+)</jradeg>", resp.text)
                 jdec = re.search(r"<jdedeg>([0-9.\-]+)</jdedeg>", resp.text)
@@ -107,7 +125,7 @@ async def query_irsa_tap(
     table: str = "allwise_p3as_psd",
 ) -> dict:
     """
-    Live NASA/IPAC IRSA TAP query hook for astronomical infrared catalog tables and SPHEREx DR1 tiles.
+    Live NASA/IPAC IRSA TAP query hook for astronomical infrared catalog tables such as AllWISE and 2MASS.
     Dynamically adapts requested columns depending on target catalog table.
     """
     radius_deg = max(0.0001, min(0.1, radius_arcsec / 3600.0))
@@ -152,29 +170,20 @@ async def query_irsa_tap(
             else:
                 error_msg = f"IRSA TAP returned HTTP {resp.status_code}"
     except httpx.TimeoutException:
-        error_msg = "NASA IRSA TAP request timed out after 8.0s; fell back to simulated DR1 catalog."
+        error_msg = "NASA IRSA TAP request timed out after 8.0s; no catalog results returned."
     except Exception as exc:
         error_msg = f"IRSA TAP query error: {str(exc)}"
 
-    cov = check_spherex_moc(ra, dec)
-    fallback_source = {
-        "ra": ra,
-        "dec": dec,
-        "note": "Astrometric center seed (offline fallback)",
-    }
-    if "allwise" in table_lower or "wise" in table_lower:
-        fallback_source["w1mpro"] = round(11.2 + (ra % 4.0), 3)
-        fallback_source["w2mpro"] = round(10.8 + (abs(dec) % 3.0), 3)
-
     return {
-        "status": "offline_fallback",
-        "message": error_msg or "IRSA query unavailable; using simulated fallback.",
-        "provenance": "SPHEREx-TAP-Simulated" if cov["spherex_covered"] else "unWISE-TAP-Simulated",
+        "status": "unavailable",
+        "message": error_msg or "IRSA query unavailable.",
+        "provenance": "NASA/IPAC-IRSA-TAP",
         "table": table,
         "target": {"ra": ra, "dec": dec, "radius_arcsec": radius_arcsec},
-        "count": 1,
-        "sources": [fallback_source],
+        "count": 0,
+        "sources": [],
     }
+
 
 
 def fetch_real_unwise_cutout(
@@ -185,11 +194,11 @@ def fetch_real_unwise_cutout(
     band_index: int = 1,
     size: int = 512,
     fov_arcmin: float = 5.0,
-) -> Optional[np.ndarray]:
+) -> Optional[CutoutProduct]:
     """
     Fetch genuine NASA unWISE/NEOWISE all-sky infrared FITS cutouts from the unWISE archive.
     Reprojects using Astropy WCS onto standardized 512x512 tangent-plane grid.
-    Replaces NaNs with zeros and tags array with is_reprojected attribute.
+    Returns pixels and source metadata separately; unknown units/dates remain unknown.
     """
     import io
     import tarfile
@@ -197,24 +206,10 @@ def fetch_real_unwise_cutout(
     from astropy.wcs import WCS
     from wcs_pipeline import reproject_to_tangent_grid
 
-    # Map sequential epochs to distinct real NEOWISE data releases spanning 2010 - 2021
-    release_sequence = ["allwise", "neo2", "neo5", "neo7"]
-    if isinstance(epoch_idx, int) and 0 <= epoch_idx < len(release_sequence):
-        version = release_sequence[epoch_idx]
-    else:
-        epoch_map = {
-            "2010": "allwise",
-            "2014": "neo1",
-            "2015": "neo2",
-            "2016": "neo3",
-            "2017": "neo4",
-            "2018": "neo5",
-            "2019": "neo6",
-            "2020": "neo7",
-            "2021": "neo8",
-        }
-        yr = str(epoch_str)[:4] if epoch_str else "allwise"
-        version = epoch_map.get(yr, release_sequence[min(len(release_sequence) - 1, max(0, epoch_idx))])
+    # Epochs identify archive releases, never fabricated observation dates.
+    version = epoch_str or UNWISE_RELEASES[min(len(UNWISE_RELEASES) - 1, max(0, epoch_idx))]
+    if version not in UNWISE_RELEASES:
+        return None
 
     band = "2" if band_index > 50 else "1"
 
@@ -255,9 +250,17 @@ def fetch_real_unwise_cutout(
                                 pixel_scale_arcsec=pix_scale,
                             )
                             clean_regridded = np.nan_to_num(regridded, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
-                            setattr(clean_regridded, "is_reprojected", True)
-                            return clean_regridded
+                            header = hdul[0].header
+                            return CutoutProduct(
+                                pixels=clean_regridded, data_kind="observed",
+                                provenance="unWISE-Archive", release=version, band=int(band),
+                                wavelength_um=3.4 if band == "1" else 4.6,
+                                epoch=str(header.get("DATE-OBS", "unknown")),
+                                bunit=str(header.get("BUNIT", "unknown")),
+                                source_url=str(resp.url), is_reprojected=True,
+                            )
     except Exception:
+        logger.warning("unWISE retrieval failed for release %s, band %s", version, band, exc_info=True)
         return None
     return None
 
@@ -275,7 +278,8 @@ def generate_calibrated_cutout(
     """
     Generate WCS-aligned 512x512 cutout.
     Attempts live fetch of genuine NASA unWISE/NEOWISE FITS observations first.
-    Falls back to deterministic calibration if offline or network unavailable.
+    Falls back to a deterministic educational simulation if the archive is unavailable.
+    Legacy pixel-only helper; API callers use generate_cutout_product for provenance.
     """
     if prefer_real:
         real_cutout = fetch_real_unwise_cutout(
@@ -288,7 +292,7 @@ def generate_calibrated_cutout(
             fov_arcmin=fov_arcmin,
         )
         if real_cutout is not None:
-            return real_cutout
+            return real_cutout.pixels
 
     rng = np.random.default_rng(int((ra * 1000 + abs(dec) * 100) % 2**31))
     sky = (0.11 + rng.normal(0.0, 0.01, size=(size, size))).astype(np.float32)
@@ -331,6 +335,21 @@ def generate_calibrated_cutout(
     return sky
 
 
+def generate_cutout_product(ra, dec, epoch_idx, band_index, size=512, epoch_str=None, fov_arcmin=5.0):
+    product = fetch_real_unwise_cutout(ra, dec, epoch_idx, epoch_str, band_index, size, fov_arcmin)
+    if product is not None:
+        return product
+    pixels = generate_calibrated_cutout(
+        ra, dec, epoch_idx, band_index, size, epoch_str, fov_arcmin, prefer_real=False
+    )
+    return CutoutProduct(
+        pixels=pixels, data_kind="simulated", provenance="Synthetic-Demo",
+        release=epoch_str or UNWISE_RELEASES[min(epoch_idx, len(UNWISE_RELEASES) - 1)],
+        band=2 if band_index > 50 else 1,
+        wavelength_um=3.4 if band_index <= 50 else 4.6, bunit="arbitrary",
+    )
+
+
 def generate_spectrum_vector(
     ra: float,
     dec: float,
@@ -341,7 +360,7 @@ def generate_spectrum_vector(
 ) -> bytes:
     """
     Return 102-band Float32Array (408 bytes) little-endian binary vector
-    extracted at the clicked WCS (ra, dec) within the cutout centered at (center_ra, center_dec).
+    for an educational simulation, not extracted from observed SPHEREx data.
     """
     channels = 102
     w = np.linspace(0.75, 5.0, channels, dtype=np.float32)

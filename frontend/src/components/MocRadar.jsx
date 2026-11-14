@@ -142,7 +142,7 @@ export default function MocRadar({
     ctx.clearRect(0, 0, W, H);
 
     // 1. Boundary Ellipse
-    ctx.strokeStyle = '#30363d';
+    ctx.strokeStyle = '#25364a';
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
@@ -157,12 +157,12 @@ export default function MocRadar({
     ctx.fillStyle = '#05070a';
     ctx.fill();
 
-    // 2. SPHEREx Primary MOC coverage area (green glow at high galactic latitudes)
+    // 2. Illustrative Galactic latitude area (green glow at high galactic latitudes)
     ctx.fillStyle = 'rgba(46, 160, 67, 0.12)';
     ctx.fillRect(0, 0, W, H);
 
     // 3. Galactic Plane Avoidance Zone (|b| < 6° - amber unWISE fallback)
-    ctx.fillStyle = 'rgba(232, 141, 58, 0.2)';
+    ctx.fillStyle = 'rgba(217, 181, 128, 0.2)';
     ctx.beginPath();
     const planePointsTop = [];
     const planePointsBottom = [];
@@ -208,7 +208,7 @@ export default function MocRadar({
     BENCHMARK_TARGETS.forEach((bm) => {
       const g = getGalactic(bm.ra, bm.dec);
       const pt = projectAitoff(g.l, g.b);
-      ctx.fillStyle = '#4ea8de';
+      ctx.fillStyle = '#8bb8d4';
       ctx.beginPath();
       ctx.arc(pt.px, pt.py, 2.5, 0, Math.PI * 2);
       ctx.fill();
@@ -219,7 +219,7 @@ export default function MocRadar({
       const g = getGalactic(effectiveRa, effectiveDec);
       const pt = projectAitoff(g.l, g.b);
 
-      ctx.strokeStyle = '#e88d3a';
+      ctx.strokeStyle = '#d9b580';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(pt.px, pt.py, 6, 0, Math.PI * 2);
@@ -294,14 +294,14 @@ export default function MocRadar({
       inMoc: hoveredCoord.inMoc,
       inSpherexFootprint: hoveredCoord.inMoc,
       fovArcmin: 5.0,
-      survey: hoveredCoord.inMoc ? 'SPHEREx 102-Band' : 'unWISE Fallback',
+      survey: hoveredCoord.inMoc ? 'unWISE request / simulation' : 'unWISE Fallback',
       epochs: hoveredCoord.inMoc
-        ? ['2025-05', '2025-11', '2026-05', '2026-10']
-        : ['2014-03', '2019-09', '2023-09'],
+        ? ['allwise', 'neo2', 'neo5']
+        : ['allwise', 'neo2', 'neo5'],
       motionDxPerEpoch: 0.0,
       motionDyPerEpoch: 0.0,
       variabilityAmp: 0.0,
-      dqFlag: 'NOMINAL'
+      dqFlag: 'UNAVAILABLE'
     });
   };
 
@@ -310,13 +310,13 @@ export default function MocRadar({
   const isCurrentInMoc = currentG ? Math.abs(currentG.b) >= 6 : true;
 
   return (
-    <div
+    <div className="sky-map-panel"
       style={{
-        background: '#161b22',
-        border: '1px solid #30363d',
+        background: '#0c1421',
+        border: '1px solid #25364a',
         borderRadius: 8,
-        padding: '16px 20px',
-        marginTop: 20
+        padding: '12px',
+        marginTop: 0
       }}
     >
       <div
@@ -334,12 +334,12 @@ export default function MocRadar({
             style={{
               fontSize: 11,
               fontFamily: 'IBM Plex Mono, monospace',
-              color: '#8b949e',
+              color: '#9aaabd',
               textTransform: 'uppercase',
               letterSpacing: '0.05em'
             }}
           >
-            All-Sky Footprint & MOC Radar
+            Sky coordinate map · illustrative latitude shading
           </div>
           <div style={{ fontSize: 13, fontWeight: 500, color: '#f0f6fc', marginTop: 2 }}>
             Aitoff Galactic Projection · Click any point on the globe to explore
@@ -349,11 +349,11 @@ export default function MocRadar({
         <div style={{ display: 'flex', gap: 12, fontSize: 11, fontFamily: 'IBM Plex Mono, monospace' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#2ea043' }} />
-            SPHEREx Primary (|b| ≥ 6°)
+            Latitude shading (|b| ≥ 6°), not survey coverage
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#e88d3a' }} />
-            unWISE Fallback (|b| &lt; 6°)
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#d9b580' }} />
+            Low latitude (|b| &lt; 6°)
           </span>
         </div>
       </div>
@@ -366,7 +366,7 @@ export default function MocRadar({
           background: '#0d1117',
           padding: 12,
           borderRadius: 6,
-          border: '1px solid #21262d',
+          border: '1px solid #1c2b3d',
           position: 'relative',
           cursor: hoveredCoord ? 'crosshair' : 'default'
         }}
@@ -387,7 +387,7 @@ export default function MocRadar({
             marginTop: 8,
             fontFamily: 'IBM Plex Mono, monospace',
             fontSize: 11,
-            color: '#8b949e',
+            color: '#9aaabd',
             display: 'flex',
             justifyContent: 'space-between',
             width: '100%',
@@ -402,8 +402,8 @@ export default function MocRadar({
                   RA {hoveredCoord.ra.toFixed(2)}°, Dec {hoveredCoord.dec.toFixed(2)}°
                 </strong>{' '}
                 · (l {hoveredCoord.lDeg.toFixed(1)}°, b {hoveredCoord.bDeg.toFixed(1)}°) ·{' '}
-                <span style={{ color: hoveredCoord.inMoc ? '#2ea043' : '#e88d3a', fontWeight: 600 }}>
-                  {hoveredCoord.inMoc ? '● MOC IN' : '▲ unWISE FALLBACK'}
+                <span style={{ color: hoveredCoord.inMoc ? '#2ea043' : '#d9b580', fontWeight: 600 }}>
+                  {hoveredCoord.inMoc ? 'High Galactic latitude' : 'Low Galactic latitude'}
                 </span>
               </>
             ) : (
@@ -413,8 +413,8 @@ export default function MocRadar({
 
           <span>
             Target:{' '}
-            <strong style={{ color: isCurrentInMoc ? '#2ea043' : '#e88d3a' }}>
-              {isCurrentInMoc ? 'SPHEREx Active' : 'unWISE Fallback'}
+            <strong style={{ color: isCurrentInMoc ? '#2ea043' : '#d9b580' }}>
+              {isCurrentInMoc ? 'Coverage unverified' : 'Coverage unverified'}
             </strong>
           </span>
         </div>

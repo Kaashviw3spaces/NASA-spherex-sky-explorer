@@ -9,13 +9,15 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from cache import BoundedLRUCache, JobStore
 from moc_index import (
     check_spherex_moc,
-    generate_calibrated_cutout,
+    generate_cutout_product,
+    UNWISE_RELEASES,
     generate_spectrum_vector,
     query_irsa_tap,
     resolve_target_query,
@@ -60,8 +62,13 @@ app.add_middleware(
         "X-Channel-Count",
         "X-Diff-Confidence",
         "X-WCS-Reprojected",
+        "X-Data-Kind",
+        "X-Source-Release",
+        "X-Source-URL",
     ],
 )
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 raster_cache = BoundedLRUCache()
 job_store = JobStore()
@@ -82,7 +89,7 @@ class CutoutJobRequest(BaseModel):
         for b in v:
             if not (0 <= b <= 102):
                 raise ValueError(f"band index {b} out of range [0, 102]")
-        return v
+        return list(dict.fromkeys(v))
 
 
 class DiffRequest(BaseModel):
@@ -121,12 +128,13 @@ async def spectrum(
     raw_bytes = generate_spectrum_vector(
         ra, dec, radius_arcsec, center_ra=center_ra, center_dec=center_dec, fov_arcmin=fov_arcmin
     )
-    cov = check_spherex_moc(ra, dec)
     return Response(
         content=raw_bytes,
         media_type="application/octet-stream",
         headers={
-            "X-Survey-Provenance": "SPHEREx-Survey1" if cov["spherex_covered"] else "unWISE-Fallback",
+            "X-Survey-Provenance": "Synthetic-Demo",
+            "X-Data-Kind": "simulated",
+            "X-BUNIT": "arbitrary",
             "X-Channel-Count": "102",
         },
     )
@@ -140,9 +148,20 @@ async def tap_query(
     table: str = Query("allwise_p3as_psd", pattern="^[a-zA-Z0-9_]+$"),
 ):
     """
-    Live NASA/IPAC IRSA TAP Query Hook for cross-matching infrared catalog sources and SPHEREx survey tiles.
+    Live NASA/IPAC IRSA TAP Query Hook for cross-matching infrared catalog sources in supported public tables.
     """
     return await query_irsa_tap(ra=ra, dec=dec, radius_arcsec=radius_arcsec, table=table)
+
+
+def raster_manifest(cache_key, headers):
+    return {
+        "cache_key": cache_key,
+        "epoch": headers.get("X-Observation-Epoch", "unknown"),
+        "release": headers.get("X-Source-Release", "unknown"),
+        "data_kind": headers.get("X-Data-Kind", "unknown"),
+        "band_index": int(headers["X-Band-Index"]),
+        "raster_url": f"/api/data/raster/{cache_key}",
+    }
 
 
 async def _process_cutout_job(
@@ -159,14 +178,16 @@ async def _process_cutout_job(
     pixel_scale = (fov_arcmin * 60.0) / size
 
     try:
-        for e_idx, epoch in enumerate(epochs):
+        for epoch in epochs:
+            e_idx = UNWISE_RELEASES.index(epoch)
             for band_idx in bands:
                 cache_key = BoundedLRUCache.make_key(
-                    round(ra, 5), round(dec, 5), round(fov_arcmin, 2), epoch, band_idx, provenance
+                    ra, dec, fov_arcmin, epoch, band_idx, provenance, "observed"
                 )
-                if not raster_cache.has(cache_key):
-                    flux = await asyncio.to_thread(
-                        generate_calibrated_cutout,
+                entry = raster_cache.get(cache_key)
+                if not entry or entry[1].get("X-Data-Kind") != "observed":
+                    product = await asyncio.to_thread(
+                        generate_cutout_product,
                         ra,
                         dec,
                         e_idx,
@@ -174,12 +195,10 @@ async def _process_cutout_job(
                         size,
                         epoch,
                         fov_arcmin,
-                        True,
                     )
-                    is_reproj = bool(getattr(flux, "is_reprojected", False))
-                    clean_flux = np.nan_to_num(flux, nan=0.0).astype(np.float32)
+                    is_reproj = product.is_reprojected
+                    clean_flux = np.nan_to_num(product.pixels, nan=0.0).astype(np.float32)
                     raw_u16, bscale, bzero = await asyncio.to_thread(quantize_to_uint16, clean_flux)
-                    wavelength_um = 0.75 + (max(1, min(102, band_idx)) - 1) / 101.0 * 4.25
                     headers = build_wcs_headers(
                         width=size,
                         height=size,
@@ -188,22 +207,26 @@ async def _process_cutout_job(
                         ra=ra,
                         dec=dec,
                         pixel_scale_arcsec=pixel_scale,
-                        epoch=epoch,
-                        provenance=provenance,
-                        band_index=band_idx,
-                        wavelength_um=wavelength_um,
+                        epoch=product.epoch,
+                        provenance=product.provenance,
+                        band_index=product.band,
+                        wavelength_um=product.wavelength_um,
                         is_reprojected=is_reproj,
+                    )
+                    headers.update({
+                        "X-Data-Kind": product.data_kind,
+                        "X-Source-Release": product.release,
+                        "X-Source-URL": product.source_url,
+                        "X-BUNIT": product.bunit,
+                    })
+                    # Product kind is part of identity: retries cannot overwrite older demo downloads.
+                    cache_key = BoundedLRUCache.make_key(
+                        ra, dec, fov_arcmin, epoch, band_idx, provenance, product.data_kind
                     )
                     raster_cache.put(cache_key, raw_u16, headers)
 
-                completed.append(
-                    {
-                        "cache_key": cache_key,
-                        "epoch": epoch,
-                        "band_index": band_idx,
-                        "raster_url": f"/api/data/raster/{cache_key}",
-                    }
-                )
+                stored = raster_cache.get(cache_key)
+                completed.append(raster_manifest(cache_key, stored[1]))
                 job_store.update(job_id, status="partial", completed_rasters=list(completed))
 
         job_store.update(job_id, status="ready", completed_rasters=completed)
@@ -213,30 +236,21 @@ async def _process_cutout_job(
 
 @app.post("/api/jobs/cutouts")
 async def create_cutout_job(req: CutoutJobRequest):
-    cov = check_spherex_moc(req.ra, req.dec)
-    provenance = "SPHEREx-Survey1" if cov["spherex_covered"] else "unWISE-Fallback"
-    epochs = req.epochs or (
-        cov["primary_survey_epochs"]
-        if cov["spherex_covered"]
-        else ["2014-03-01T00:00:00Z", "2019-09-01T00:00:00Z", "2023-09-01T00:00:00Z"]
-    )
+    provenance = "unwise-products-v3"  # Invalidate legacy falsely labelled cache entries.
+    epochs = list(dict.fromkeys(req.epochs or UNWISE_RELEASES[:3]))
+    if any(epoch not in UNWISE_RELEASES for epoch in epochs):
+        raise HTTPException(status_code=422, detail="epochs must be archive releases: allwise, neo2, neo5, neo7")
 
     all_cached = []
     missing = False
     for epoch in epochs:
         for band_idx in req.bands:
             cache_key = BoundedLRUCache.make_key(
-                round(req.ra, 5), round(req.dec, 5), round(req.fov_arcmin, 2), epoch, band_idx, provenance
+                req.ra, req.dec, req.fov_arcmin, epoch, band_idx, provenance, "observed"
             )
-            if raster_cache.has(cache_key):
-                all_cached.append(
-                    {
-                        "cache_key": cache_key,
-                        "epoch": epoch,
-                        "band_index": band_idx,
-                        "raster_url": f"/api/data/raster/{cache_key}",
-                    }
-                )
+            entry = raster_cache.get(cache_key)
+            if entry and entry[1].get("X-Data-Kind") == "observed":
+                all_cached.append(raster_manifest(cache_key, entry[1]))
             else:
                 missing = True
 
@@ -245,7 +259,7 @@ async def create_cutout_job(req: CutoutJobRequest):
             status_code=200,
             content={
                 "status": "ready",
-                "provenance": provenance,
+                "provenance": "per-raster metadata",
                 "raster_urls": [item["raster_url"] for item in all_cached],
                 "rasters": all_cached,
             },
@@ -297,6 +311,8 @@ async def compute_diff(req: DiffRequest):
 
     bytes_a, hdr_a = entry_a
     bytes_b, hdr_b = entry_b
+    if any(hdr_a.get(field) != hdr_b.get(field) for field in ("X-BUNIT", "X-Band-Index", "X-Data-Kind")):
+        raise HTTPException(status_code=400, detail="Difference inputs must share units, band and observed/simulated kind.")
     w_a, h_a = (int(x) for x in hdr_a["X-Raster-Dimensions"].split(","))
     w_b, h_b = (int(x) for x in hdr_b["X-Raster-Dimensions"].split(","))
     if (w_a, h_a) != (w_b, h_b):
@@ -333,6 +349,12 @@ async def compute_diff(req: DiffRequest):
         wavelength_um=float(hdr_a["X-Band-Wavelength-Um"]),
         is_reprojected=is_reproj,
     )
+    headers["X-BUNIT"] = hdr_a.get("X-BUNIT", "unknown")
+    headers["X-Data-Kind"] = (
+        "observed" if all(h.get("X-Data-Kind") == "observed" for h in (hdr_a, hdr_b)) else "simulated"
+    )
+    headers["X-Source-Release"] = f"{hdr_a.get('X-Source-Release', 'unknown')}..{hdr_b.get('X-Source-Release', 'unknown')}"
+    headers["X-Source-URL"] = hdr_a.get("X-Source-URL", "")
     headers["X-Diff-Confidence"] = f"{confidence:.4f}"
     return Response(content=raw_u16, media_type="application/octet-stream", headers=headers)
 
@@ -370,12 +392,44 @@ async def export_fits(cache_key: str):
     hdu.header["EPOCH"] = hdr["X-Observation-Epoch"]
     hdu.header["BANDIDX"] = int(hdr["X-Band-Index"])
     hdu.header["WAVELEN"] = float(hdr["X-Band-Wavelength-Um"])
-    hdu.header["BUNIT"] = "MJy/sr"
+    hdu.header["BUNIT"] = hdr.get("X-BUNIT", "unknown")
+    hdu.header["DATKIND"] = hdr.get("X-Data-Kind", "unknown")
+    hdu.header["RELEASE"] = hdr.get("X-Source-Release", "unknown")
+    hdu.header["SRCURL"] = hdr.get("X-Source-URL", "")
+    hdu.header.add_history("Display product: regridded, percentile-clipped and uint16 quantized.")
+    hdu.header.add_history("Not an original archive FITS or a calibrated SPHEREx observation.")
 
     buf = io.BytesIO()
     hdu.writeto(buf)
     return Response(
         content=buf.getvalue(),
         media_type="application/fits",
-        headers={"Content-Disposition": f'attachment; filename="spherex_{cache_key}.fits"'},
+        headers={"Content-Disposition": f'attachment; filename="sky_{cache_key}.fits"'},
     )
+
+# Isolated real-data endpoints: archive failures never become simulations.
+from spherex_archive import discover as discover_spherex, cutout as spherex_cutout
+
+@app.get('/api/spherex/images')
+async def spherex_images(ra: float = Query(..., ge=0, le=360), dec: float = Query(..., ge=-90, le=90)):
+    try:
+        return {'images': await discover_spherex(ra, dec), 'collection': 'spherex_dr1', 'source': 'NASA/IPAC IRSA SIA2'}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail='IRSA discovery unavailable. Retry shortly.') from exc
+
+@app.get('/api/spherex/cutout')
+async def real_spherex_cutout(url: str, ra: float = Query(..., ge=0, le=360), dec: float = Query(..., ge=-90, le=90), fov: float = Query(5, ge=1, le=10)):
+    try:
+        return await spherex_cutout(url, ra, dec, fov)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail='SPHEREx cutout unavailable; no simulated replacement was generated.') from exc
+
+@app.get('/api/spherex/spectral-samples')
+async def real_spectral_samples(ra: float = Query(..., ge=0, le=360), dec: float = Query(..., ge=-90, le=90)):
+    from spherex_archive import spectral_samples
+    try:
+        return await spectral_samples(ra, dec)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail='Measured spectral samples could not be retrieved from IRSA.') from exc

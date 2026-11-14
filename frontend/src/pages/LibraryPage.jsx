@@ -1,3 +1,6 @@
+import EditorialCover from '../components/learning/EditorialCover';
+import JournalLearning from '../components/learning/JournalLearning';
+import SceneNotes from '../components/learning/SceneNotes';
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -22,14 +25,16 @@ import {
 
 export default function LibraryPage() {
   const [items, setItems] = useState([]);
+  const [section, setSection] = useState('notes');
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState('');
   const [statusMsg, setStatusMsg] = useState(null);
+  const [libraryError, setLibraryError] = useState('');
   const fileInputRef = useRef(null);
   const navigate = useNavigate();
 
   const loadItems = () => {
-    setItems(getLibraryItems());
+    try { setItems(getLibraryItems(true)); setLibraryError(''); } catch (error) { setLibraryError(error.message); }
   };
 
   useEffect(() => {
@@ -38,7 +43,7 @@ export default function LibraryPage() {
 
   const handleDelete = (id, name) => {
     if (window.confirm(`Delete "${name}" from your personal library?`)) {
-      deleteLibraryItem(id);
+      if (!deleteLibraryItem(id)) { setLibraryError('Could not delete this sky. Check browser storage.'); return; }
       loadItems();
       showStatus('Scene deleted.');
     }
@@ -51,7 +56,7 @@ export default function LibraryPage() {
 
   const handleSaveEdit = (id) => {
     if (!editName.trim()) return;
-    updateLibraryItem(id, { name: editName.trim() });
+    if (!updateLibraryItem(id, { name: editName.trim() })) { setLibraryError('Could not rename this sky. Check browser storage.'); return; }
     setEditingId(null);
     loadItems();
     showStatus('Scene renamed.');
@@ -81,91 +86,19 @@ export default function LibraryPage() {
 
   return (
     <div className="library-page" style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
-      <header
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          flexWrap: 'wrap',
-          gap: 16,
-          marginBottom: 32,
-          borderBottom: '1px solid var(--border, #21262d)',
-          paddingBottom: 24
-        }}
-      >
-        <div>
-          <div
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '4px 10px',
-              borderRadius: 20,
-              background: 'rgba(232, 141, 58, 0.1)',
-              color: '#e88d3a',
-              fontSize: 12,
-              fontFamily: 'IBM Plex Mono, monospace',
-              marginBottom: 12
-            }}
-          >
-            <Bookmark size={14} /> Personal Stored Coordinates
-          </div>
-          <h1
-            style={{
-              fontSize: '2rem',
-              fontWeight: 600,
-              margin: '0 0 8px 0',
-              fontFamily: 'Instrument Serif, serif',
-              letterSpacing: '-0.02em'
-            }}
-          >
-            Personal Sky Library
-          </h1>
-          <p style={{ margin: 0, color: 'var(--text-muted, #8b949e)', fontSize: 14 }}>
-            Saved sky coordinates, target moments, and custom observation scenes stored locally in your browser.
-          </p>
-        </div>
-
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <button
-            onClick={exportLibraryItems}
-            disabled={items.length === 0}
-            className="btn btn-secondary"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '8px 14px',
-              fontSize: 13,
-              cursor: items.length === 0 ? 'not-allowed' : 'pointer'
-            }}
-          >
-            <Download size={14} /> Export JSON
-          </button>
-
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="btn btn-secondary"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', fontSize: 13 }}
-          >
-            <Upload size={14} /> Import JSON
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json"
-            style={{ display: 'none' }}
-            onChange={handleImportFile}
-          />
-        </div>
-      </header>
-
+      <EditorialCover image="rho" eyebrow="YOUR PERSONAL OBSERVING NOTEBOOK" title="My cosmic journal">Keep the questions. Collect the moments.</EditorialCover>
+      <div className="journal-tabs" role="group" aria-label="Journal sections">{[['notes', 'Field notes'], ['missions', 'Mission log'], ['skies', `Saved skies · ${items.length}`]].map(([id, label]) => <button key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</div>
+      {libraryError && <p className="inline-error" role="alert">{libraryError}</p>}
+      {section !== 'skies' && <JournalLearning view={section} />}
+      {section === 'skies' && <>
+      <div className="saved-sky-tools btn-row"><button className="btn-compact" disabled={!items.length} onClick={() => { try { exportLibraryItems(); } catch (error) { setLibraryError(error.message); } }}>Export saved skies</button><button className="btn-compact" onClick={() => fileInputRef.current?.click()}>Import saved skies</button><input ref={fileInputRef} type="file" accept="application/json" hidden onChange={handleImportFile} /></div>
+      <h2 className="saved-skies-heading">Saved skies</h2>
       {statusMsg && (
         <div
           style={{
             background: 'rgba(78, 168, 222, 0.15)',
-            border: '1px solid #4ea8de',
-            color: '#4ea8de',
+            border: '1px solid #8bb8d4',
+            color: '#8bb8d4',
             padding: '10px 16px',
             borderRadius: 6,
             marginBottom: 20,
@@ -182,30 +115,30 @@ export default function LibraryPage() {
           style={{
             textAlign: 'center',
             padding: '64px 20px',
-            background: 'var(--card-bg, #161b22)',
+            background: 'var(--card-bg, #0c1421)',
             borderRadius: 8,
-            border: '1px dashed var(--border, #30363d)'
+            border: '1px dashed var(--border, #25364a)'
           }}
         >
-          <Sparkles size={40} style={{ color: '#e88d3a', marginBottom: 16 }} />
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 500, margin: '0 0 8px 0' }}>Your library is currently empty</h2>
-          <p style={{ color: 'var(--text-muted, #8b949e)', maxWidth: 440, margin: '0 auto 24px auto', fontSize: 14 }}>
+          <Sparkles size={40} style={{ color: '#d9b580', marginBottom: 16 }} />
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 500, margin: '0 0 8px 0' }}>Every discovery starts somewhere.</h2>
+          <p style={{ color: 'var(--text-muted, #9aaabd)', maxWidth: 440, margin: '0 auto 24px auto', fontSize: 14 }}>
             Explore any celestial coordinate in the Sky Explorer and click{' '}
-            <strong>Edit / Save the Scene</strong> to bookmark coordinates, video clips, and instant snapshots.
+            <strong>Edit / Save the Scene</strong> to save your coordinates and viewing settings. Video clips download separately.
           </p>
           <Link
             to="/explorer"
             className="btn btn-primary"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 18px' }}
           >
-            Launch Sky Explorer
+            Start exploring
           </Link>
         </div>
       ) : (
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))',
             gap: 20
           }}
         >
@@ -215,8 +148,8 @@ export default function LibraryPage() {
               <div
                 key={item.id}
                 style={{
-                  background: 'var(--card-bg, #161b22)',
-                  border: '1px solid var(--border, #30363d)',
+                  background: 'var(--card-bg, #0c1421)',
+                  border: '1px solid var(--border, #25364a)',
                   borderRadius: 8,
                   padding: 20,
                   display: 'flex',
@@ -244,7 +177,7 @@ export default function LibraryPage() {
                           onKeyDown={(e) => e.key === 'Enter' && handleSaveEdit(item.id)}
                           style={{
                             background: '#0d1117',
-                            border: '1px solid #e88d3a',
+                            border: '1px solid #d9b580',
                             color: '#fff',
                             padding: '4px 8px',
                             borderRadius: 4,
@@ -282,7 +215,7 @@ export default function LibraryPage() {
                       style={{
                         background: 'transparent',
                         border: 'none',
-                        color: 'var(--text-muted, #8b949e)',
+                        color: 'var(--text-muted, #9aaabd)',
                         cursor: 'pointer',
                         padding: 4
                       }}
@@ -295,7 +228,7 @@ export default function LibraryPage() {
                     style={{
                       fontFamily: 'IBM Plex Mono, monospace',
                       fontSize: 12,
-                      color: '#4ea8de',
+                      color: '#8bb8d4',
                       marginBottom: 12
                     }}
                   >
@@ -309,38 +242,39 @@ export default function LibraryPage() {
                       gap: 8,
                       fontSize: 11,
                       fontFamily: 'IBM Plex Mono, monospace',
-                      color: 'var(--text-muted, #8b949e)'
+                      color: 'var(--text-muted, #9aaabd)'
                     }}
                   >
-                    <span style={{ background: '#21262d', padding: '2px 6px', borderRadius: 4 }}>
-                      FoV: {item.fovArcmin}°
+                    <span style={{ background: '#1c2b3d', padding: '2px 6px', borderRadius: 4 }}>
+                      FoV: {item.fovArcmin} arcmin
                     </span>
-                    <span style={{ background: '#21262d', padding: '2px 6px', borderRadius: 4 }}>
+                    <span style={{ background: '#1c2b3d', padding: '2px 6px', borderRadius: 4 }}>
                       Mode: {item.mode}
                     </span>
-                    <span style={{ background: '#21262d', padding: '2px 6px', borderRadius: 4 }}>
+                    <span style={{ background: '#1c2b3d', padding: '2px 6px', borderRadius: 4 }}>
                       λ: {item.activeWavelength} µm
                     </span>
-                    <span style={{ background: '#21262d', padding: '2px 6px', borderRadius: 4 }}>
+                    <span style={{ background: '#1c2b3d', padding: '2px 6px', borderRadius: 4 }}>
                       Stretch: {item.stretch}
                     </span>
                   </div>
                 </div>
 
+                <SceneNotes item={item} onSaved={loadItems} />
                 <div
                   style={{
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
                     paddingTop: 14,
-                    borderTop: '1px solid var(--border, #21262d)',
+                    borderTop: '1px solid var(--border, #1c2b3d)',
                     gap: 10
                   }}
                 >
                   <span
                     style={{
                       fontSize: 11,
-                      color: 'var(--text-muted, #8b949e)',
+                      color: 'var(--text-muted, #9aaabd)',
                       fontFamily: 'IBM Plex Mono, monospace'
                     }}
                   >
@@ -369,7 +303,7 @@ export default function LibraryPage() {
                     <button
                       onClick={() =>
                         navigate(
-                          `/scene?ra=${item.ra}&dec=${item.dec}&fov=${item.fovArcmin}&mode=${item.mode}&stretch=${item.stretch}&colormap=${item.colormap}&wavelength=${item.activeWavelength}&title=${encodeURIComponent(
+                          `/scene?ra=${item.ra}&dec=${item.dec}&fov=${item.fovArcmin}&mode=${item.mode}&stretch=${item.stretch}&colormap=${item.colormap}&wavelength=${item.activeWavelength}&gain=${item.gain}&epoch=${item.epoch}&curtain=${item.curtain}&fps=${item.fps}&title=${encodeURIComponent(
                             item.name
                           )}`
                         )
@@ -392,6 +326,7 @@ export default function LibraryPage() {
           })}
         </div>
       )}
+      </>}
     </div>
   );
 }
