@@ -40,6 +40,7 @@ import {
   generateStarfieldBuffer
 } from '../utils/astronomyRenderer';
 import SpectrumChart from '../components/SpectrumChart';
+import MeasuredSpectrum from '../components/MeasuredSpectrum';
 import MocRadar from '../components/MocRadar';
 import FitsHeaderModal from '../components/FitsHeaderModal';
 
@@ -80,7 +81,7 @@ function ExplorerSession({ spherex }) {
   const [epochIdx, setEpochIdx] = useState(Math.max(0, parseInt(searchParams.get('epoch') || '0', 10) || 0));
   const [curtainPos, setCurtainPos] = useState(Math.min(1, Math.max(0, Number(searchParams.get('curtain') ?? 0.5) || 0)));
   const { frames: liveFrames, status: imageStatus, error: imageError, requestKey, retry } = useCutoutFrames(target);
-  const science = (spherex ? useSpherexFrames : useCutoutFrames)(target);
+  const science = (spherex ? useSpherexFrames : useCutoutFrames)(target, { metadataOnly: true });
   useEffect(() => {
     if (spherex && liveFrames.length < 2 && imageStatus !== 'loading') { setViewMode('static'); setIsPlaying(false); }
   }, [spherex, liveFrames.length, imageStatus]);
@@ -133,6 +134,7 @@ function ExplorerSession({ spherex }) {
   const [sampleOffset, setSampleOffset] = useState(0);
   const [spectrumState, setLiveSpectrumBands] = useState(null);
   const [crosshair, setCrosshair] = useState({ x: 256, y: 256 });
+  const [measurementPosition, setMeasurementPosition] = useState({ ra: initialTarget.ra, dec: initialTarget.dec });
   const [sampleCoords, setSampleCoords] = useState({
     ra: initialTarget.ra,
     dec: initialTarget.dec
@@ -334,9 +336,10 @@ function ExplorerSession({ spherex }) {
   }, [target, viewMode, stretch, colormap, diffMode, epochIdx, curtainPos, setSearchParams]);
 
   const hoverTime = useRef(0);
-  // Shared demo-spectrum path for both Explore and the legacy viewer; values are simulated.
+  // Only the legacy viewer requests the teaching model. Explore uses measured SPHEREx samples.
   useEffect(() => {
     const controller = new AbortController();
+    if (spherex) return () => controller.abort();
     fetchSpectrumApi(
       sampleCoords.ra,
       sampleCoords.dec,
@@ -357,7 +360,7 @@ function ExplorerSession({ spherex }) {
         }
       });
     return () => controller.abort();
-  }, [target, sampleCoords, apertureRadius]);
+  }, [spherex, target, sampleCoords, apertureRadius]);
 
   const fallbackSpectrum = useMemo(
     () => generateSpectrum(target, apertureRadius, sampleOffset),
@@ -423,7 +426,7 @@ function ExplorerSession({ spherex }) {
         { id, version, requestKey, levels, buffer: copy, width: size, height: size, stretch, colormap, gain,
           label: liveFrames.length && liveFrames.every(f => f.meta?.dataKind === 'observed')
             ? spherex ? "Infrared context image · science measurements shown separately" : `Observed unWISE · ${liveFrames.map(f => observationDate(f.meta.epoch)).join(" / ")}`
-            : spherex ? 'SPHEREx archive · waiting for observed pixels' : 'SIMULATED DEMO / mixed sources — see source details' },
+            : spherex ? (liveFrames.length ? 'SIMULATED DEMO / mixed context sources — see source details' : 'Context archive · loading image') : 'SIMULATED DEMO / mixed sources — see source details' },
         [copy.buffer]
       );
     };
@@ -537,7 +540,9 @@ function ExplorerSession({ spherex }) {
     setCrosshair({ x, y });
     setSampleOffset((x - canvas.width / 2) * 0.02 + (y - canvas.height / 2) * 0.02);
 
-    setSampleCoords(gridToSky(x, y, target.ra, target.dec, target.fovArcmin || 5, canvas.width));
+    const sky = gridToSky(x, y, target.ra, target.dec, target.fovArcmin || 5, canvas.width);
+    setSampleCoords(sky);
+    if (e.type === 'click') setMeasurementPosition(sky);
   };
 
   const handleExportCsv = () => {
@@ -646,7 +651,7 @@ function ExplorerSession({ spherex }) {
 
 
       {spherex && <div className="console-observation-row"><label className="mono" style={{ fontSize: 12 }}>Observation <select aria-label="SPHEREx observation date" value={scienceIndex % Math.max(1, science.frames.length)} disabled={!science.frames.length} onChange={event => setScienceIndex(Number(event.target.value))}>{science.frames.length ? science.frames.map((frame, index) => <option key={frame.meta.sourceUrl} value={index}>{observationDate(frame.meta.epoch)} · {frame.meta.spectralRange}</option>) : <option value={0}>{scienceDate}</option>}</select></label><span className="quiet-note">SPHEREx date · context image acquired separately.</span></div>}
-      <DataNotice spherex={spherex} scienceOnly={spherex} frames={spherex ? science.frames : liveFrames} activeIndex={spherex ? scienceIndex : epochIdx} mode={spherex ? "static" : viewMode} difference={diffMode} target={target} colormap={colormap} stretch={stretch} status={spherex ? science.status : imageStatus} error={spherex ? science.error : imageError} onRetry={spherex ? science.retry : retry} />
+      <DataNotice spherex={spherex} scienceOnly={spherex} spectrumKind={spherex ? "measured" : "simulated"} frames={spherex ? science.frames : liveFrames} activeIndex={spherex ? scienceIndex : epochIdx} mode={spherex ? "static" : viewMode} difference={diffMode} target={target} colormap={colormap} stretch={stretch} status={spherex ? science.status : imageStatus} error={spherex ? science.error : imageError} onRetry={spherex ? science.retry : retry} />
 
 
       <p className="bookmark-status" role="status">{bookmarkStatus}</p>
@@ -763,7 +768,7 @@ function ExplorerSession({ spherex }) {
                 {target.name} · {String(target.ra)}°, {String(target.dec)}°
               </span>
               <span className="hud-pill">
-                {spherex ? `SPHEREx observation: ${scienceDate}` : diffMode
+                {spherex ? `Context: ${activeFrameMeta.release || activeFrameMeta.provenance} · ${observationDate(activeFrameMeta.epoch)}` : diffMode
                   ? psfDiffResult
                     ? `Fitted difference · heuristic score ${psfDiffResult.meta.diffConfidence.toFixed(2)} (not a probability)`
                     : `Local Variance Δ (${target.epochs[0]} − ${target.epochs[target.epochs.length - 1]})`
@@ -875,7 +880,7 @@ function ExplorerSession({ spherex }) {
                   <span>Prev</span>
                 </button>
                 <span className="mono" style={{ fontSize: 11, color: '#d9b580', padding: '0 6px', whiteSpace: 'nowrap' }}>
-                  {epochIdx + 1} / {frameCount} · {spherex ? `Context frame ${epochIdx + 1} · SPHEREx: ${scienceDate}` : target.epochs?.[epochIdx] || `Epoch ${epochIdx + 1}`}
+                  {epochIdx + 1} / {frameCount} · {spherex ? `Context: ${activeFrameMeta.release || "preview"}` : target.epochs?.[epochIdx] || `Epoch ${epochIdx + 1}`}
                 </span>
                 <button
                   type="button"
@@ -1016,7 +1021,7 @@ function ExplorerSession({ spherex }) {
 
         {/* Right: Simulated spectrum Profiler & Metadata */}
         <section className="sed-pane"><div className="console-section-label"><span>02 / SPECTRUM</span><span>WAVELENGTH & SIGNAL</span></div>
-          {<div className="panel-box spectrum-panel" id="spectrum">
+          {spherex ? <MeasuredSpectrum ra={measurementPosition.ra} dec={measurementPosition.dec} onMeasureCursor={() => setMeasurementPosition({ ...sampleCoords })} /> : <div className="panel-box spectrum-panel" id="spectrum">
             <div className="panel-header">
               <span className="panel-title">Simulated spectrum · arbitrary units</span>
               <div style={{ display: 'flex', gap: 6 }}>
@@ -1046,7 +1051,7 @@ function ExplorerSession({ spherex }) {
               showLines={showLines}
             />}
           </div>}
-          {spherex && <div className="panel-box cursor-panel"><div className="panel-header"><span className="panel-title">Cursor readout</span><span className="mono">{crosshair.x}, {crosshair.y} px</span></div><dl className="metadata-grid"><dt>Image value</dt><dd>{(() => { const frame = liveFrames[epochIdx % Math.max(1, liveFrames.length)]; const value = frame?.buffer[crosshair.y * 512 + crosshair.x]; return Number.isFinite(value) ? `${value.toPrecision(5)} ${frame.meta.bunit}` : 'No coverage'; })()}</dd><dt>Wavelength</dt><dd>{activeFrameMeta.wavelengthUm ? `${activeFrameMeta.wavelengthUm} µm` : 'Unavailable'}</dd><dt>Sky position</dt><dd>{sampleCoords.ra.toFixed(5)}°, {sampleCoords.dec.toFixed(5)}°</dd></dl><details className="cursor-help"><summary>How to read this</summary><p className="quiet-note">Image values are interpolated brightness. The spectrum is a separate teaching model, not chemical measurements. Uncertainties are not propagated into this preview.</p><Link className="text-link" to="/experiments?lab=spectrum">Learn to read a spectrum ↗</Link><p><a className="text-link" href="https://irsa.ipac.caltech.edu/onlinehelp/spherex/spherex/sp.html" target="_blank" rel="noreferrer">IRSA spectrophotometry ↗</a></p></details></div>}
+          {spherex && <div className="panel-box cursor-panel"><div className="panel-header"><span className="panel-title">Cursor readout</span><span className="mono">{crosshair.x}, {crosshair.y} px</span></div><dl className="metadata-grid"><dt>Image value</dt><dd>{(() => { const frame = liveFrames[epochIdx % Math.max(1, liveFrames.length)]; const value = frame?.buffer[crosshair.y * 512 + crosshair.x]; return Number.isFinite(value) ? `${value.toPrecision(5)} ${frame.meta.bunit}` : 'No coverage'; })()}</dd><dt>Wavelength</dt><dd>{activeFrameMeta.wavelengthUm ? `${activeFrameMeta.wavelengthUm} µm` : 'Unavailable'}</dd><dt>Sky position</dt><dd>{sampleCoords.ra.toFixed(5)}°, {sampleCoords.dec.toFixed(5)}°</dd></dl><details className="cursor-help"><summary>How to read this</summary><p className="quiet-note">Image values are interpolated brightness. Click the image or choose Measure at cursor to request separate SPHEREx samples at that sky position. These are not extracted from the context image. Uncertainties are not propagated into this preview.</p><Link className="text-link" to="/experiments?lab=spectrum">Learn to read a spectrum ↗</Link><p><a className="text-link" href="https://irsa.ipac.caltech.edu/onlinehelp/spherex/spherex/sp.html" target="_blank" rel="noreferrer">IRSA spectrophotometry ↗</a></p></details></div>}
           <details className="science-details" open><summary>Sky map<span>SELECT POSITION</span></summary>
           {<MocRadar
             currentRa={target.ra}
@@ -1093,7 +1098,7 @@ function ExplorerSession({ spherex }) {
           />}
           </details>
 
-          {<details className="science-details"><summary>Spectrum controls<span>APERTURE &amp; WAVELENGTH</span></summary><div className="panel-box">
+          {!spherex && <details className="science-details"><summary>Spectrum controls<span>APERTURE &amp; WAVELENGTH</span></summary><div className="panel-box">
             <div className="panel-header">
               <span className="panel-title">Aperture &amp; Wavelength Controls</span>
               <span className="mono" style={{ fontSize: 11, color: '#8698ad' }}>
@@ -1151,8 +1156,8 @@ function ExplorerSession({ spherex }) {
           </div>
 
           </details>}
-      {spherex && <details className="console-data-guide"><summary>Data sources & interpretation</summary><p className="quiet-note">SPHEREx DR1 supplies the observation dates and science metadata. The spectrum graph is a separate simulated learning model. The context image shows the same requested coordinates from a separate survey and observing period. <a href="https://irsa.ipac.caltech.edu/Missions/spherex.html" target="_blank" rel="noreferrer">SPHEREx archive ↗</a></p></details>}
-      {spherex && <details className="science-details"><summary>Context image source</summary><DataNotice frames={liveFrames} activeIndex={epochIdx} mode={viewMode} target={target} colormap={colormap} stretch={stretch} status={imageStatus} error={imageError} onRetry={retry} /></details>}
+      {spherex && <details className="console-data-guide"><summary>Data sources & interpretation</summary><p className="quiet-note">SPHEREx DR1 supplies the observation dates and science metadata. The graph plots available SPHEREx native-pixel samples with statistical uncertainties; gaps remain empty. It does not identify chemicals or measure abundances. The context image shows the same requested coordinates from a separate survey and observing period. <a href="https://irsa.ipac.caltech.edu/Missions/spherex.html" target="_blank" rel="noreferrer">SPHEREx archive ↗</a></p></details>}
+      {spherex && <details className="science-details"><summary>Context image source</summary><DataNotice spectrumKind={spherex ? "measured" : "simulated"} frames={liveFrames} activeIndex={epochIdx} mode={viewMode} target={target} colormap={colormap} stretch={stretch} status={imageStatus} error={imageError} onRetry={retry} /></details>}
           <details className="science-details"><summary>Technical details<span>COORDINATES &amp; METADATA</span></summary><div className="panel-box">
             <div className="panel-header">
               <span className="panel-title">{spherex ? "SPHEREx observation metadata" : "WCS & Target Telemetry"}</span>

@@ -31,8 +31,8 @@ test('both viewers render custom pointings, valid defaults, and invalid-link err
         export function renderMeasured() { return renderToString(createElement(SpectrumChart, { measured: true, bands: [{ bandId: 1, wavelength: 3.05, flux: -0.2, err: .1, bandwidth: .08 }], inSpherexFootprint: true, activeWavelength: 3.05, onSelectWavelength: () => {}, showLines: true })); }
         export function renderData(props) { return renderToString(createElement(DataNotice, props)); }
         export function render(page, query) {
-          const component = ({explorer: Explorer, scene: Scene, learn: Learn, home: Home, targets: Targets, missions: Missions, mission: Missions, experiments: Experiments, library: Library})[page];
-          return renderToString(createElement(MemoryRouter, { initialEntries: [page === 'mission' ? '/missions/invisible-universe' : '/view?' + query] }, createElement(Routes, null, createElement(Route, { path: page === 'mission' ? '/missions/:missionId' : '*', element: createElement(component) }))));
+          const component = ({explorer: Explorer, spherex: Explorer, scene: Scene, learn: Learn, home: Home, targets: Targets, missions: Missions, mission: Missions, experiments: Experiments, library: Library})[page];
+          return renderToString(createElement(MemoryRouter, { initialEntries: [page === 'mission' ? '/missions/invisible-universe' : '/view?' + query] }, createElement(Routes, null, createElement(Route, { path: page === 'mission' ? '/missions/:missionId' : '*', element: createElement(component, { spherex: page === 'spherex' }) }))));
         }
       `; }
     }],
@@ -42,6 +42,10 @@ test('both viewers render custom pointings, valid defaults, and invalid-link err
   });
   const code = built.output.find(item => item.type === 'chunk').code;
   const { render, renderData, renderMeasured } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+  const mainExplorer = render('spherex', 'ra=10&dec=20');
+  assert.match(mainExplorer, /SPHEREx · measured samples/);
+  assert.match(mainExplorer, /Measure at cursor/);
+  assert.doesNotMatch(mainExplorer, /Simulated spectrum · arbitrary units|Aperture Radius/);
   const measuredChart = renderMeasured();
   assert.match(measuredChart, /Measured SPHEREx samples wavelength/);
   assert.match(measuredChart, /MJy\/sr/);

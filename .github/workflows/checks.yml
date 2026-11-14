@@ -30,3 +30,18 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start production stack
+        run: docker compose up --build -d --wait --wait-timeout 180
+      - name: Check production routes and API proxy
+        run: |
+          curl --fail --retry 5 --retry-delay 2 http://localhost:8080/api/health
+          for route in / /explorer /learn /missions /experiments /library /scene; do
+            curl --fail --silent "http://localhost:8080$route" | grep -q 'id="root"'
+          done
+      - name: Stop stack
+        if: always()
+        run: docker compose down

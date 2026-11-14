@@ -26,7 +26,7 @@ export default function SpectrumChart({
   const safeWiseBands = Array.isArray(wiseBands) ? wiseBands : [];
 
   const maxFlux = Math.max(
-    1,
+    ...(measured && safeBands.length ? [] : [1]),
     ...(inSpherexFootprint
       ? safeBands.map((b) => (b && typeof b.flux === 'number' ? b.flux + (b.err || 0) : 1))
       : safeWiseBands.map((w) => (w && typeof w.flux === 'number' ? w.flux * 1.35 : 1)))
@@ -34,7 +34,8 @@ export default function SpectrumChart({
 
   const xOf = (w) => pad.left + ((w - minW) / (maxW - minW)) * plotW;
   const minFlux = measured ? Math.min(0, ...safeBands.map(b => b.flux - (b.err || 0))) : 0;
-  const yOf = (f) => pad.top + plotH - ((f - minFlux) / (maxFlux - minFlux)) * plotH;
+  const fluxSpan = maxFlux - minFlux || 1;
+  const yOf = (f) => pad.top + plotH - ((f - minFlux) / fluxSpan) * plotH;
 
   const linePath = safeBands
     .map((b, i) => `${i === 0 ? 'M' : 'L'} ${xOf(b.wavelength).toFixed(1)} ${yOf(b.flux).toFixed(1)}`)
@@ -140,7 +141,7 @@ export default function SpectrumChart({
           fontSize="10"
           fontFamily="IBM Plex Mono, monospace"
         >
-          {maxFlux.toFixed(1)}
+          {measured ? maxFlux.toPrecision(3) : maxFlux.toFixed(1)}
         </text>
         <text
           x={pad.left - 8}

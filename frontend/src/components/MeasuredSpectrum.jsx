@@ -1,36 +1,57 @@
+import { useEffect, useState } from 'react';
 import SpectrumChart from './SpectrumChart';
 import { MOLECULAR_MARKERS } from '../data/catalog';
 import { observationDate } from '../utils/observationDate';
-import { useEffect, useState } from 'react';
-const references = [['H₂O ice', 3.05], ['PAH emission', 3.3], ['CO₂ ice', 4.27], ['CO', 4.67]];
-export default function MeasuredSpectrum({ ra, dec }) {
+import { fetchSpectralSamples } from '../api/spectralSamples';
+
+export default function MeasuredSpectrum({ ra, dec, onMeasureCursor }) {
+  const key = JSON.stringify([ra, dec]);
+  const [state, setState] = useState(null);
+  const [attempt, setAttempt] = useState(0);
   const [wavelength, setWavelength] = useState(3.05);
-  const [chemical, setChemical] = useState('All');
-  const [requested, setRequested] = useState(true), [result, setResult] = useState(null), [error, setError] = useState(''), [selected, setSelected] = useState(null);
-  useEffect(() => { setResult(null); setRequested(true); setError(''); setSelected(null); }, [ra, dec]);
-  useEffect(() => {
-    if (!requested) return;
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-    fetch(`/api/spherex/spectral-samples?ra=${ra}&dec=${dec}`, { signal: controller.signal }).then(async response => { const body = await response.json(); if (!response.ok) throw Error(body.detail); return body; }).then(setResult).catch(e => { if (e.name !== 'AbortError') setError(e.message); });
-    }, 1200);
-    return () => { clearTimeout(timer); controller.abort(); };
-  }, [requested, ra, dec]);
+  const [showMarkers, setShowMarkers] = useState(false);
+  const current = state?.key === key ? state : { status: 'loading' };
+  const result = current.result;
   const samples = result?.samples || [];
+  const selected = samples.length ? samples.reduce((best, sample) => Math.abs(sample.wavelength - wavelength) < Math.abs(best.wavelength - wavelength) ? sample : best) : null;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ key, status: 'loading' });
+    const deadline = setTimeout(() => controller.abort(new Error('Archive request timed out. Please retry.')), 150000);
+    fetchSpectralSamples(ra, dec, controller.signal, attempt > 0)
+      .then(result => { if (!controller.signal.aborted) setState({ key, status: 'ready', result }); })
+      .catch(error => { if (error.name !== 'AbortError') setState({ key, status: 'error', error: error.message }); })
+      .finally(() => clearTimeout(deadline));
+    return () => { clearTimeout(deadline); controller.abort(); };
+  }, [key, attempt]);
+
   const download = () => {
-    const rows = [['wavelength_um', 'bandwidth_um', 'surface_brightness', 'sigma', 'unit', 'date_utc', 'source_url'], ...samples.map(s => [s.wavelength, s.bandwidth, s.flux, s.sigma, s.unit, s.date, s.source])];
-    const blob = new Blob([rows.map(row => row.map(value => '"' + String(value).replaceAll('"', '""') + '"').join(',')).join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = 'spherex-measured-samples.csv'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const columns = ['wavelength', 'bandwidth', 'flux', 'sigma', 'unit', 'date', 'source', 'flags'];
+    const rows = [['wavelength_um', 'bandwidth_um', 'surface_brightness', 'sigma_1', 'unit', 'date_utc', 'source_url', 'flags'], ...samples.map(sample => columns.map(column => sample[column]))];
+    const csv = rows.map(row => row.map(value => '"' + String(value ?? '').replaceAll('"', '""') + '"').join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = `spherex_${ra.toFixed(5)}_${dec.toFixed(5)}_samples.csv`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  return <section className="panel-box spectrum-panel"><div className="panel-header"><span className="panel-title">SPHEREx spectrum · measured samples</span><span className="mono" style={{ fontSize: 10 }}>MJy/sr · ±1σ</span></div><p>Left to right: infrared wavelength. Higher dots: brighter surface brightness. Each dot is a real observation at the selected image position; bars show its uncertainty.</p>{!requested && <button className="btn-primary" onClick={() => setRequested(true)}>Load measured samples</button>}{error && <button className="btn-compact" onClick={() => { setError(''); setRequested(false); setTimeout(() => setRequested(true), 0); }}>Retry measurements</button>}{requested && !result && !error && <p role="status">Pause over a position to load its SPHEREx samples. Reading calibrated data from IRSA…</p>}{error && <p role="alert">{error}</p>}
-    {samples.length > 0 && <div className="observation-date"><strong>SPHEREx observation dates</strong><p>{observationDate(samples.reduce((a,b) => a.date < b.date ? a : b).date)} — {observationDate(samples.reduce((a,b) => a.date > b.date ? a : b).date)}</p><small>{samples.length} measured samples · RA {ra.toFixed(4)}° · Dec {dec.toFixed(4)}°</small></div>}
-    <p className="mono" style={{ fontSize: 11 }}>Linked to image cursor · RA {ra.toFixed(5)}° · Dec {dec.toFixed(5)}°</p>
-    <div className="spectral-reference-controls"><label>Chemical reference <select value={chemical} onChange={event => setChemical(event.target.value)}><option>All</option>{references.map(([name]) => <option key={name}>{name}</option>)}</select></label><span>Gold: reference positions · Blue: measurements</span></div>
-    <SpectrumChart measured hoverSelect bands={samples.map((sample, index) => ({ ...sample, bandId: index + 1, err: sample.sigma }))} inSpherexFootprint activeWavelength={wavelength} onSelectWavelength={value => { setWavelength(value); if (samples.length) setSelected(samples.reduce((best, sample) => Math.abs(sample.wavelength-value) < Math.abs(best.wavelength-value) ? sample : best)); }} showLines markers={MOLECULAR_MARKERS.filter(marker => chemical === 'All' || marker.wavelength === references.find(([name]) => name === chemical)?.[1])} />
-    {!samples.length && <p role="status">{requested && !result && !error ? 'Retrieving real measurements…' : 'No measured samples plotted'}</p>}
-    <p className="quiet-note">Study tip: select a dot to read its date and brightness. Compare nearby wavelengths cautiously—these exposures were taken at different times.</p><p className="quiet-note">Horizontal bars: passband width. Vertical bars: ±1σ statistical uncertainty. Dots are not connected across missing wavelengths.</p>
-    {result && <><p role="status">{selected ? `${selected.wavelength.toFixed(4)} µm · ${selected.flux.toPrecision(5)} ± ${selected.sigma.toPrecision(3)} ${selected.unit} (1σ) · ${observationDate(selected.date)}` : 'Hover, tap, or focus a dot for its measurement.'}</p>{!samples.length && <p>No samples passed the quality checks. No curve has been invented.</p>}<p className="quiet-note">{result.samples.length} measured points at cursor position ({ra.toFixed(4)}°, {dec.toFixed(4)}°) /  {result.attempted} attempted exposures. {result.rejected} unavailable or rejected. Gaps are not interpolated. Chemical labels are reference positions, not detections.</p><button className="btn-compact" disabled={!samples.length} onClick={download}>Download measurements CSV</button><details><summary>Study the measurement table</summary><div style={{ overflowX: "auto" }}><table className="data-table"><thead><tr><th>Wavelength (µm)</th><th>Brightness (MJy/sr)</th><th>±1σ</th><th>Observed (UTC)</th></tr></thead><tbody>{samples.map((s,i) => <tr key={i} onClick={() => setSelected(s)}><td>{s.wavelength.toFixed(4)}</td><td>{s.flux.toPrecision(5)}</td><td>{s.sigma.toPrecision(3)}</td><td>{observationDate(s.date)}</td></tr>)}</tbody></table></div></details><details><summary>Method and limitations</summary><p>{result.method}</p>{samples.map((s,i) => <p key={i}><a className="text-link" href={s.source}>{s.wavelength.toFixed(3)} µm · source FITS ↗</a></p>)}</details></>}
-    <details className="chemical-reference-guide"><summary>What could these features mean?</summary><p>H₂O ice near 3.05 µm and CO₂ ice near 4.27 µm can produce absorption; CO near 4.67 µm can appear in absorption or emission depending on physical conditions. The 3.3 µm feature is associated with aromatic C–H emission, commonly attributed to PAHs, a family of molecules.</p><p>These are approximate reference positions. No chemical identification is assigned to the displayed samples.</p><a className="text-link" href="https://www.jpl.nasa.gov/press-kits/spherex/mission-overview/science/" target="_blank" rel="noreferrer">SPHEREx science background · NASA/JPL ↗</a></details>
-    <p className="quiet-note">A dip alone cannot establish H₂O, CO₂ or CO. Reliable composition analysis needs continuum fitting, calibrated spectral response, background/source separation and sufficient wavelength coverage.</p>
+
+  return <section className="panel-box spectrum-panel" id="spectrum" aria-busy={current.status === 'loading'}>
+    <div className="panel-header"><span className="panel-title">SPHEREx · measured samples</span><button className="btn-compact" disabled={!samples.length} onClick={download}>CSV</button></div>
+    <p className="quiet-note">Real brightness samples at a sky position, not chemical identifications. Click the context image to select a position.</p>
+    <div className="spectral-reference-controls"><button className="btn-compact" onClick={onMeasureCursor}>Measure at cursor</button><button className={`btn-compact ${showMarkers ? 'active' : ''}`} aria-pressed={showMarkers} onClick={() => setShowMarkers(value => !value)}>Reference markers</button></div>
+    <p className="mono" style={{ fontSize: 11 }}>Sample position · RA {ra.toFixed(5)}° · Dec {dec.toFixed(5)}°</p>
+    <SpectrumChart measured hoverSelect bands={samples.map((sample, index) => ({ ...sample, bandId: index + 1, err: sample.sigma }))} inSpherexFootprint activeWavelength={wavelength} onSelectWavelength={setWavelength} showLines={showMarkers} markers={MOLECULAR_MARKERS} />
+    {current.status === 'loading' && <p role="status">Reading calibrated SPHEREx data from IRSA… First retrieval may take a minute.</p>}
+    {current.status === 'error' && <div role="alert"><p>{current.error}</p><button className="btn-compact" onClick={() => setAttempt(value => value + 1)}>Retry measurements</button></div>}
+    {result && !samples.length && <p role="status">No usable samples returned at this position. Try another position. No curve has been invented.</p>}
+    {selected && <p role="status">{selected.wavelength.toFixed(4)} µm · {selected.flux.toPrecision(4)} ± {selected.sigma.toPrecision(3)} MJy/sr · {observationDate(selected.date)}</p>}
+    <p className="quiet-note">Horizontal bars: passband width. Vertical bars: ±1σ statistical uncertainty. Missing wavelengths stay empty; exposures may have different dates.</p>
+    {showMarkers && <p className="quiet-note">H₂O ice, PAH, CO₂ ice and CO mark approximate reference wavelengths, not detections in this object.</p>}
+    {result && <details><summary>Measurements & method · {samples.length} usable samples</summary>
+      <p>{result.attempted} exposures attempted · {result.rejected} rejected or unavailable{result.excluded ? ` · ${result.excluded} unsupported samples excluded` : ''}.</p>
+      <div style={{ overflowX: 'auto' }}><table className="data-table"><caption>SPHEREx native-pixel surface brightness</caption><thead><tr><th>λ (µm)</th><th>MJy/sr</th><th>±1σ</th><th>Observed (UTC)</th><th>Source</th></tr></thead><tbody>{samples.map((sample, index) => <tr key={index}><td>{sample.wavelength.toFixed(4)}</td><td>{sample.flux.toPrecision(4)}</td><td>{sample.sigma.toPrecision(3)}</td><td>{observationDate(sample.date)}</td><td><a className="text-link" href={sample.source} target="_blank" rel="noreferrer">FITS ↗</a></td></tr>)}</tbody></table></div>
+      <p>{result.method}</p><p>No background subtraction or source photometry. Wavelengths use the archive’s visualization lookup; this is an exploratory plot, not a fitted object spectrum or chemical abundance analysis.</p>
+      <a className="text-link" href="https://caltech-ipac.github.io/spherex-archive-documentation/spherex-data-products/" target="_blank" rel="noreferrer">IRSA data products & limitations ↗</a>
+    </details>}
   </section>;
 }

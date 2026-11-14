@@ -94,15 +94,22 @@ def decode_image(content, ra=None, dec=None, fov=5):
 async def cutout(url, ra, dec, fov):
     if not valid_url(url):
         raise ValueError('Only SPHEREx DR1 spectral image URLs from IRSA are accepted.')
-    async with httpx.AsyncClient(timeout=90) as client:
-        async with client.stream('GET', url, params={'center': f'{ra},{dec}', 'size': fov / 60}) as response:
+    content = await download_fits(url, ra, dec, fov / 60)
+    return await asyncio.to_thread(decode_image, content, ra, dec, fov)
+
+
+async def download_fits(url, ra, dec, size):
+    if not valid_url(url):
+        raise ValueError('Only SPHEREx DR1 spectral image URLs from IRSA are accepted.')
+    async with httpx.AsyncClient(timeout=20) as client:
+        async with client.stream('GET', url, params={'center': f'{ra},{dec}', 'size': size}) as response:
             response.raise_for_status()
             content = bytearray()
             async for chunk in response.aiter_bytes():
                 content.extend(chunk)
                 if len(content) > 32_000_000:
-                    raise ValueError('Archive cutout exceeds the 32 MB preview limit.')
-    return await asyncio.to_thread(decode_image, content, ra, dec, fov)
+                    raise ValueError('Archive cutout exceeds the 32 MB limit.')
+    return bytes(content)
 
 
 def extract_sample(content, ra, dec):
@@ -110,6 +117,8 @@ def extract_sample(content, ra, dec):
     with fits.open(io.BytesIO(content), memmap=False) as hdus:
         image = hdus['IMAGE']
         x, y = WCS(image.header).celestial.world_to_pixel_values(ra, dec)
+        if not np.all(np.isfinite([x, y])):
+            return None
         ix, iy = int(np.rint(x)), int(np.rint(y))
         if not (0 <= iy < image.data.shape[0] and 0 <= ix < image.data.shape[1]):
             return None
@@ -123,7 +132,12 @@ def extract_sample(content, ra, dec):
         wavelength, bandwidth = wave_wcs.all_pix2world([[ix, iy]], 0)[0]
         if (flag & ~((1 << 21) | (1 << 12))) != 0 or not np.all(np.isfinite([flux, variance, wavelength, bandwidth])) or variance < 0:
             return None
-        return {'wavelength': float(wavelength), 'bandwidth': float(bandwidth), 'flux': flux, 'sigma': float(np.sqrt(variance)), 'unit': str(image.header.get('BUNIT', 'unknown')), 'flags': flag}
+        if not (.75 <= wavelength <= 5) or bandwidth <= 0:
+            return None
+        unit = str(image.header.get('BUNIT', 'unknown'))
+        if unit.replace(' ', '') != 'MJy/sr':
+            return None
+        return {'wavelength': float(wavelength), 'bandwidth': float(bandwidth), 'flux': flux, 'sigma': float(np.sqrt(variance)), 'unit': unit, 'flags': flag}
 
 
 @cached_archive(32, 600)
@@ -134,16 +148,17 @@ async def spectral_samples(ra, dec):
     indices = np.linspace(0, len(ordered) - 1, min(12, len(ordered)), dtype=int) if ordered else []
     chosen = [ordered[int(i)] for i in indices]
     semaphore = asyncio.Semaphore(3)
+    failures = []
     async def sample(record):
         try:
-            async with semaphore, httpx.AsyncClient(timeout=90) as client:
-                response = await client.get(record['url'], params={'center': f'{ra},{dec}', 'size': .005})
-                response.raise_for_status()
-                if len(response.content) > 32_000_000:
-                    return None
-                value = await asyncio.to_thread(extract_sample, response.content, ra, dec)
+            async with semaphore:
+                content = await download_fits(record['url'], ra, dec, .005)
+                value = await asyncio.to_thread(extract_sample, content, ra, dec)
                 return dict(value, date=record['date'], source=record['url']) if value else None
         except Exception:
+            failures.append(record['url'])
             return None
     values = await asyncio.gather(*(sample(record) for record in chosen))
-    return {'samples': sorted([v for v in values if v], key=lambda v: v['wavelength']), 'attempted': len(chosen), 'rejected': sum(v is None for v in values), 'method': 'Nearest native pixel, Only SOURCE (bit 21) and FULLSAMPLE (bit 12) informational flags allowed; all other flags rejected; error bars are sqrt(VARIANCE). No background subtraction, PSF correction, aperture photometry, variability correction, or chemical fit. Approximate WCS-WAVE visualization wavelengths. Up to 12 exposures; incomplete spectral coverage.'}
+    if chosen and len(failures) == len(chosen):
+        raise RuntimeError('SPHEREx cutout requests failed. Retry shortly.')
+    return {'samples': sorted([v for v in values if v], key=lambda v: v['wavelength']), 'attempted': len(chosen), 'unavailable': len(failures), 'rejected': sum(v is None for v in values), 'method': 'Nearest native pixel, Only SOURCE (bit 21) and FULLSAMPLE (bit 12) informational flags allowed; all other flags rejected; error bars are sqrt(VARIANCE). No background subtraction, PSF correction, aperture photometry, variability correction, or chemical fit. Approximate WCS-WAVE visualization wavelengths. Up to 12 exposures; incomplete spectral coverage.'}

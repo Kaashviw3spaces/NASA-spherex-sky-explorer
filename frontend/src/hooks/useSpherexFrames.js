@@ -4,8 +4,8 @@ const previewCache = new Map();
 const TTL = 10 * 60 * 1000;
 
 // Adapt real archive previews to the existing 512px worker/viewer contract.
-export default function useSpherexFrames(target) {
-  const key = JSON.stringify([target.ra, target.dec, target.fovArcmin]);
+export default function useSpherexFrames(target, { metadataOnly = false } = {}) {
+  const key = JSON.stringify([target.ra, target.dec, target.fovArcmin, metadataOnly]);
   const [state, setState] = useState(null), [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
@@ -19,6 +19,13 @@ export default function useSpherexFrames(target) {
       if (!first) throw Error('No SPHEREx DR1 observations returned at this position. No simulation is substituted.');
       const matching = result.images.filter(item => item.minUm === first.minUm && item.maxUm === first.maxUm);
       const chosen = [...new Map([matching[0], matching[Math.floor(matching.length / 2)], matching.at(-1)].map(item => [item.url, item])).values()];
+      if (metadataOnly) {
+        const frames = chosen.map(record => ({ meta: { dataKind: 'observed', provenance: 'SPHEREx / NASA-IPAC IRSA', release: 'DR1', epoch: record.date + ' UTC', sourceUrl: record.url, spectralRange: `${record.minUm}–${record.maxUm} µm` } }));
+        previewCache.delete(key); previewCache.set(key, { frames, savedAt: Date.now() });
+        while (previewCache.size > 4) previewCache.delete(previewCache.keys().next().value);
+        if (!controller.signal.aborted) setState({ key, frames, status: 'ready', error: '' });
+        return;
+      }
       const loaded = new Map();
       const outcomes = await Promise.allSettled(chosen.map(async (record, index) => {
         const image = await json(`/api/spherex/cutout?ra=${target.ra}&dec=${target.dec}&fov=${Math.min(10, Math.max(1, target.fovArcmin || 5))}&url=${encodeURIComponent(record.url)}`);

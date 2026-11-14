@@ -102,3 +102,30 @@ def test_source_flag_is_informational_and_variance_is_preserved(monkeypatch):
     assert sample['sigma'] == .5
     assert sample['wavelength'] == 3.05
     assert sample['flags'] == 1 << 21
+
+
+def test_sampling_distinguishes_archive_failure_from_rejected_measurements(monkeypatch):
+    import asyncio
+    import spherex_archive as archive
+    record = {'url': 'https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/test.fits', 'minUm': 1, 'mjd': 60000, 'date': '2025-08-15'}
+    async def discover(ra, dec):
+        return [record]
+    async def failed_download(*args):
+        raise RuntimeError('archive offline')
+    async def successful_download(*args):
+        return b'fixture'
+    monkeypatch.setattr(archive, 'discover', discover)
+    monkeypatch.setattr(archive, 'download_fits', failed_download)
+    with pytest.raises(RuntimeError, match='cutout requests failed'):
+        asyncio.run(archive.spectral_samples(1.234, 2.345))
+    monkeypatch.setattr(archive, 'download_fits', successful_download)
+    monkeypatch.setattr(archive, 'extract_sample', lambda *args: {'wavelength': 3.05, 'bandwidth': .08, 'flux': -2., 'sigma': .5, 'unit': 'MJy/sr', 'flags': 0})
+    result = asyncio.run(archive.spectral_samples(1.234, 2.345))
+    assert result['samples'][0]['flux'] == -2.
+    assert result['samples'][0]['sigma'] == .5
+    assert result['unavailable'] == 0
+    monkeypatch.setattr(archive, 'extract_sample', lambda *args: None)
+    result = asyncio.run(archive.spectral_samples(1.235, 2.345))
+    assert result['samples'] == []
+    assert result['attempted'] == result['rejected'] == 1
+    assert result['unavailable'] == 0

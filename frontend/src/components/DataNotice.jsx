@@ -2,15 +2,15 @@ import { observationDate } from '../utils/observationDate';
 import { ChevronDown, Info } from 'lucide-react';
 import { displayedFrames, sourceLink } from '../utils/observationContext';
 
-export default function DataNotice({ frames = [], activeIndex = 0, mode = 'static', difference = false, target, colormap, stretch, status, error, onRetry, spherex = false, scienceOnly = false }) {
+export default function DataNotice({ frames = [], activeIndex = 0, mode = 'static', difference = false, target, colormap, stretch, status, error, onRetry, spherex = false, scienceOnly = false, spectrumKind = 'simulated' }) {
   const selected = displayedFrames(frames, activeIndex, mode, difference);
   const observed = selected.filter(frame => frame.meta?.dataKind === 'observed').length;
   const source = !selected.length ? (spherex ? 'No observation loaded' : 'Simulated preview') : observed === selected.length ? 'Observed imagery' : selected.every(frame => frame.meta?.dataKind === 'simulated') ? 'Simulated imagery' : 'Mixed or unverified sources';
   return <aside className="data-notice" aria-label={scienceOnly ? "SPHEREx science observations at requested coordinates" : "Data for the displayed image"}>
     <div className="data-status-line">
-      <span className={`source-indicator ${observed === selected.length && observed ? 'observed' : ''}`}><span className="status-dot" />{source}</span>
-      <span className="spectrum-disclosure">Spectrum: simulation</span>
-      <span className="request-status" role="status" aria-live="polite">{status === 'loading' ? 'Loading images…' : status === 'ready' ? 'Images ready' : ''}</span>
+      <span className={`source-indicator ${observed === selected.length && observed ? 'observed' : ''}`}><span className="status-dot" />{scienceOnly && observed ? "SPHEREx archive records" : source}</span>
+      <span className="spectrum-disclosure">Spectrum: {spectrumKind === "measured" ? "SPHEREx samples" : "simulation"}</span>
+      <span className="request-status" role="status" aria-live="polite">{status === 'loading' ? (scienceOnly ? 'Loading dates…' : 'Loading images…') : status === 'ready' ? (scienceOnly ? 'Dates ready' : 'Images ready') : ''}</span>
       <details className="source-details"><summary><Info size={13} /> {scienceOnly ? "SPHEREx dates & data" : "About this data"} <ChevronDown size={12} /></summary><div className="source-details-body">
         <h3>{target?.name || 'Current view'}{selected.length > 1 ? ' · comparison inputs' : ''}</h3>
         <p>{difference || mode === 'diff' ? 'A processed difference of the first and last available frames; not a validated detection.' : selected.length > 1 ? 'First and last available frames, shown together.' : scienceOnly ? 'SPHEREx observation metadata at the requested coordinates; these dates do not describe the separate context image.' : 'Metadata for the currently displayed frame.'}</p>
@@ -29,8 +29,8 @@ export default function DataNotice({ frames = [], activeIndex = 0, mode = 'stati
             <dt>Uncertainty</dt><dd>Not supplied by this app</dd>
           </dl>{url && <a className="text-link" href={url} target="_blank" rel="noreferrer">Open original archive request ↗</a>}</section>;
         })}
-        <p>Display: {colormap || 'color map not supplied'} · {stretch || 'stretch not supplied'}. Assigned display colors are not naked-eye colors. Brightness stretch changes appearance, not source measurements.</p>
-        <p>{spherex ? "Real SPHEREx DR1 spectral images, resampled to a common sky grid. Dates refer to exposures. No spectrum is extracted in this viewer." : "Archive rasters are resampled and quantized display products. Release names are not exact observing dates. This legacy viewer uses unWISE; the separate spectrum is simulated."}</p>
+        {!scienceOnly && <p>Display: {colormap || 'color map not supplied'} · {stretch || 'stretch not supplied'}. Assigned display colors are not naked-eye colors. Brightness stretch changes appearance, not source measurements.</p>}
+        <p>{scienceOnly ? "SPHEREx dates describe separate exposures at the requested coordinates. Native-pixel measurements load independently in the graph; these dates do not describe the context image." : spherex ? "Real SPHEREx DR1 spectral images, resampled to a common sky grid. Dates refer to SPHEREx exposures, not the separate context image. The graph requests native-pixel SPHEREx samples independently." : "Archive rasters are resampled and quantized display products. Release names are not exact observing dates. This legacy viewer uses unWISE; the separate spectrum is simulated."}</p>
       </div></details>
     </div>
     {error && <div className="request-error" role="alert"><p>{error} {frames.length ? 'Showing available images.' : spherex ? 'No synthetic replacement is shown.' : 'Showing a simulated preview.'}</p><button type="button" className="btn-compact" onClick={onRetry}>Retry images</button></div>}

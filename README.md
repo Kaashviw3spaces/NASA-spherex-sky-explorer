@@ -37,7 +37,7 @@ This is an independent educational project inspired by NASA’s SPHEREx mission.
 | Experience | Route | What it provides |
 | --- | --- | --- |
 | Home | `/` | Scroll-scrubbed mission introduction, target search, and discovery links |
-| Explore | `/explorer` | Context imagery, SPHEREx observation dates and metadata, comparison modes, and a labeled teaching spectrum |
+| Explore | `/explorer` | Context imagery, SPHEREx observation dates and metadata, comparison modes, and real SPHEREx spectral samples |
 | Field guide | `/learn` | Progressive explanations, a traveling-wave lab, simulated spectrum, image-processing loupe, and glossary |
 | Missions | `/missions` | Five guided investigations with objectives, checks, reflections, and local progress |
 | Experiments | `/experiments` | Interactive redshift, dust transmission, and spectrum models |
@@ -61,19 +61,29 @@ The app combines several **distinct** data paths. Observations, illustrations, a
 | Fallback image frames | Explicit `Synthetic-Demo` generation after archive retrieval fails | Simulated, arbitrary signal; no telescope observation date |
 | SPHEREx dates and metadata | NASA/IPAC IRSA SIA2 discovery of DR1 spectral images at the requested coordinates | Separate observations, not the context image’s capture dates |
 | SPHEREx preview API | Real IRSA FITS cutouts on a common 128×128 TAN sky grid | Bilinear interpolation is not integrated-flux conserving; previews are enlarged for display. |
-| Main Explore spectrum | Shared demo-spectrum pipeline and `SpectrumChart.jsx` | Generated teaching curve, not an extracted spectrum or chemical-composition measurement |
-| Experimental spectral-sample API | Nearest native SPHEREx pixel across up to 12 selected exposures; wavelength lookup and variance | Exploratory, incomplete sampling; not currently the main Explore graph |
+| Main Explore spectrum | SPHEREx native-pixel samples via `/api/spherex/spectral-samples` and `MeasuredSpectrum.jsx` | Partial, exploratory surface brightness with ±1σ errors; no chemical identification or fitted source spectrum |
+| Legacy explorer and learning spectra | Explicitly labeled generated teaching curves | Simulations, not telescope measurements |
 | Catalog queries | IRSA TAP; default table `allwise_p3as_psd` | Failed queries return unavailable results, not invented sources. |
 | Sky map | Coordinate selection with illustrative shading | Not a verified SPHEREx coverage map |
 | Mission/editorial imagery | Credited NASA/Webb material and an AI-assisted SPHEREx homepage illustration | Artwork and educational illustrations are not telescope measurements. |
 
 SPHEREx covers approximately **0.75–5 µm in 102 spectral bands**; that does not mean every selected position has complete coverage. Molecular markers on teaching charts are reference positions, not detections. Comparing images requires attention to observing dates, wavelength response, resolution, calibration, alignment, noise, and quality flags.
 
-The experimental extraction accepts pixels with only the informational `SOURCE` and/or `FULLSAMPLE` flags, rejects other flags, and reports `sqrt(VARIANCE)` as statistical uncertainty. It does not perform PSF/aperture photometry, background subtraction, variability correction, a continuum fit, or abundance estimation. Its WCS-WAVE wavelengths are intended for visualization. Missing samples remain gaps.
+The spectral-sample extraction accepts pixels with only the informational `SOURCE` and/or `FULLSAMPLE` flags, rejects other flags, and reports `sqrt(VARIANCE)` as statistical uncertainty. It does not perform PSF/aperture photometry, background subtraction, variability correction, a continuum fit, or abundance estimation. Its WCS-WAVE wavelengths are intended for visualization. Missing samples remain gaps.
 
 **Challenge scope:** the project supports public exploration and educational time comparison. It is not yet a validated SPHEREx motion-search or Planet X detection pipeline. The main observation viewport currently uses context imagery, while real SPHEREx products are available through the backend integration.
 
 References: [SPHEREx at NASA](https://science.nasa.gov/mission/spherex/), [IRSA SPHEREx archive](https://irsa.ipac.caltech.edu/Missions/spherex.html), [IRSA data access](https://caltech-ipac.github.io/spherex-archive-documentation/spherex-data-access/), [IRSA data products](https://caltech-ipac.github.io/spherex-archive-documentation/spherex-data-products/), [unWISE](https://unwise.me/).
+
+## 🚀 Submission walkthrough
+
+1. Open **Explore** and select a target or enter coordinates. Check the visible context-image source label.
+2. Use **Blink**, **Swipe**, or **Side-by-Side** to inspect the available context releases. These are not a SPHEREx time series, and missing dates remain unavailable.
+3. Read the separate **SPHEREx observation** selector for actual archive exposure dates at the requested coordinates.
+4. Inspect the **SPHEREx measured samples** graph. Click the image or choose **Measure at cursor** to request another sky position. Read uncertainties and dates; download the measurement CSV. Sparse coverage or an empty plot is an honest result.
+5. Complete a mission, use a learning experiment, and save a reflection in the journal. Journal data stays in this browser; export a backup before changing devices.
+
+**Scope for judges:** this is an educational prototype with a real SPHEREx archive integration and separate context imagery. Because the main image comparison deliberately retains unWISE imagery, it does **not fully satisfy** the challenge requirement to compare SPHEREx images over time. It does not identify Planet X or infer chemical abundances.
 
 <a id="architecture"></a>
 
@@ -140,7 +150,7 @@ Archive release names (`allwise`, `neo2`, `neo5`, `neo7`) are not precise observ
 
 ### Real SPHEREx integration
 
-Explore uses two separate paths: **context imagery for its main canvas**, and **real SPHEREx DR1 observations for dates, metadata, and supporting preview products**. The main spectrum remains a labeled teaching model. The sequence below describes the SPHEREx path only.
+Explore uses two separate paths: **context imagery for its main canvas**, and **real SPHEREx DR1 observations for dates, metadata, and supporting preview products**. The main spectrum plots real SPHEREx native-pixel samples independently of the context image. The sequence below describes the SPHEREx path only.
 
 ```mermaid
 sequenceDiagram
@@ -153,7 +163,8 @@ sequenceDiagram
     alt Records available
         Archive-->>API: Spectral image URLs, dates and detector wavelength ranges
         API-->>UI: Date-sorted observation records
-        UI->>API: GET /api/spherex/cutout with source URL and coordinates
+        Note over UI: Explore metadata stops here; preview API remains available
+        UI->>API: Optional GET /api/spherex/cutout with source URL and coordinates
         API->>Archive: Request native spectral FITS cutout
         Archive-->>API: Multi-extension FITS file
         API->>API: Read IMAGE and source units
@@ -170,11 +181,11 @@ sequenceDiagram
 
 Implementation: [`useSpherexFrames.js`](frontend/src/hooks/useSpherexFrames.js) → [`main.py`](backend/main.py) → [`spherex_archive.py`](backend/spherex_archive.py). [`DataNotice.jsx`](frontend/src/components/DataNotice.jsx) displays the selected SPHEREx metadata separately from the context-image source.
 
-- **Discovery:** DR1 only, up to 300 date-sorted records. The hook selects up to three exposures with the same detector-wide wavelength range. This does not guarantee matching wavelengths at every pixel.
+- **Discovery:** Explore retrieves dates and metadata directly from discovery without downloading SPHEREx image previews. DR1 only, up to 300 date-sorted records. The hook selects up to three exposures with the same detector-wide wavelength range. This does not guarantee matching wavelengths at every pixel.
 - **Preview:** 128×128 common TAN grid with bilinear interpolation, enlarged for display. Source FITS retains the original quality, variance, and spectral-WCS extensions. These are not propagated into preview uncertainties.
 - **Caching:** discovery results for 10 minutes and previews for one hour, with bounded in-process caches and duplicate-request coalescing. The frontend retains a bounded recent-preview cache and loads selected exposures concurrently.
 - **Errors:** cutout downloads are limited to 32 MB. Missing coverage stays empty and archive failures remain errors. First-time retrieval still depends on IRSA availability and download speed.
-- **Experimental extraction:** `/api/spherex/spectral-samples` is a separate exploratory extraction endpoint, not the source of the main Explore spectrum and not a chemical-identification pipeline.
+- **Spectrum:** `/api/spherex/spectral-samples` supplies the main Explore graph. Up to 12 exposures are sampled with bounded downloads and three concurrent requests. Click the context image or choose **Measure at cursor** to select a position; hovering alone does not launch slow archive requests. Measurements preserve dates, source FITS links, passband widths, quality flags and ±1σ uncertainties in the CSV. Missing samples stay empty. Reference markers are optional and never constitute chemical identifications. Failed requests can be retried; successful responses are cached by exact coordinates for ten minutes.
 
 <a id="learning-design"></a>
 
@@ -209,7 +220,7 @@ Sticky instruments unpin on smaller screens. Native scroll choreography, keyboar
 backend/
   main.py                  API routes, jobs, downloads
   moc_index.py             Context archive products, resolution, TAP, simulations
-  spherex_archive.py       IRSA discovery, cutouts, experimental spectral samples
+  spherex_archive.py       IRSA discovery, cutouts, exploratory spectral samples
   wcs_pipeline.py          WCS reprojection, quantization, fitted subtraction
   cache.py                 Raster and job caches
   tests/                   API, provenance and archive tests
@@ -347,7 +358,7 @@ docker compose config --quiet
 
 The frontend uses Node’s built-in test runner and Vite-based in-memory rendering, with no new test framework. Coverage includes pointing validation, transport cancellation/polling, cache identity, missing pixels, scene settings, spectral model features, scroll mathematics, and actual page rendering. Backend tests cover API validation, mocked archive transport, FITS provenance/export, reprojection, and extraction/cache behavior.
 
-GitHub Actions runs frontend tests/build and backend tests on pushes and pull requests. Local browser checks separately exercise key interactions, responsive layouts, and reduced-motion behavior. Automated passes do not establish astrophysical calibration, complete coverage, or continuous availability of external archives.
+GitHub Actions runs frontend tests/build, backend tests, and a production Docker Compose smoke check on pushes and pull requests. Local browser checks separately exercise key interactions, responsive layouts, and reduced-motion behavior. Automated passes do not establish astrophysical calibration, complete coverage, or continuous availability of external archives.
 
 <a id="assets-and-attribution"></a>
 
