@@ -1,3 +1,5 @@
+> Historical design proposal, not a description of implemented capabilities. See README.md for current data limitations.
+
 # Planet X & SPHEREx Time-Series and Spectral Sky Explorer
 
 * **Author:** ashwinanand

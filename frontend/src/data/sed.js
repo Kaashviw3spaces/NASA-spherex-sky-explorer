@@ -8,8 +8,8 @@ export function generateSpectrum(target, apertureRadius = 2, seedOffset = 0) {
       bandId: i + 1,
       wavelength: Number(w.toFixed(4)),
       flux: Number(flux.toFixed(3)),
-      err: Number((flux * 0.045).toFixed(3)),
-      qualityFlag: 0
+      err: null,
+      qualityFlag: null
     });
   }
   return {

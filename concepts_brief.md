@@ -1,3 +1,5 @@
+> Historical design proposal, not a description of implemented capabilities. See README.md for current data limitations.
+
 # SPHEREx Sky Explorer: Technical Implementation Plan & Binary Protocol Specification
 
 * **Author:** ashwinanand

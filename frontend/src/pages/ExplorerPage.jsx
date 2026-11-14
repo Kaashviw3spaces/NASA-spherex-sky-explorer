@@ -1,4 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { gridToSky } from '../utils/skyCoordinates';
+import useSpherexFrames from '../hooks/useSpherexFrames';
+import { observationDate } from '../utils/observationDate';
+import { computeCutLevels } from '../utils/displayLevels';
+import { displayedFrames, observationSnapshot } from '../utils/observationContext';
+import { saveLibraryItem } from '../utils/libraryStorage';
+import WhatAmISeeing from '../components/learning/WhatAmISeeing';
+import { targetFromParams } from '../data/pointing';
+import useCutoutFrames from '../hooks/useCutoutFrames';
+import DataNotice from '../components/DataNotice';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import {
   Play,
@@ -20,8 +30,6 @@ import { BENCHMARK_TARGETS } from '../data/catalog';
 import { generateSpectrum } from '../data/sed';
 import { resolveQueryToTarget } from '../data/resolver';
 import {
-  fetchCutoutsWithPolling,
-  getCachedCutouts,
   fetchPsfDiffApi,
   fetchSpectrumApi,
   resolveTargetApi
@@ -35,74 +43,74 @@ import SpectrumChart from '../components/SpectrumChart';
 import MocRadar from '../components/MocRadar';
 import FitsHeaderModal from '../components/FitsHeaderModal';
 
-export default function ExplorerPage() {
+export default function ExplorerPage({ spherex = false }) {
+  const [params] = useSearchParams();
+  // A navigation to another pointing starts a fresh viewer session, including playback and samples.
+  let pointing;
+  try { pointing = targetFromParams(params); } catch (error) {
+    return <div className="page-container"><p role="alert">{error.message}</p><Link to="/explorer">Open the default sky view</Link></div>;
+  }
+  const key = JSON.stringify([pointing.ra, pointing.dec, pointing.fovArcmin, pointing.name]);
+  return <ExplorerSession key={key} spherex={spherex} />;
+}
+
+function ExplorerSession({ spherex }) {
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const initialTarget = useMemo(() => {
-    const tId = searchParams.get('target');
-    const ra = searchParams.get('ra');
-    const dec = searchParams.get('dec');
-    if (tId) {
-      const found = BENCHMARK_TARGETS.find((t) => t.id === tId);
-      if (found) return found;
-    }
-    if (ra && dec) return resolveQueryToTarget(`${ra}, ${dec}`, BENCHMARK_TARGETS);
-    return BENCHMARK_TARGETS[0];
-  }, []);
+  const initialTarget = useMemo(() => targetFromParams(searchParams), []);
 
-  const [target, setTarget] = useState(initialTarget);
-  const [queryInput, setQueryInput] = useState(initialTarget.name);
-  const [viewMode, setViewMode] = useState(searchParams.get('mode') || 'blink');
+  const [target, setTargetState] = useState(initialTarget);
+  const setTarget = (next) => {
+    searchControllerRef.current?.abort();
+    diffControllerRef.current?.abort();
+    setSearching(false);
+    setTargetState(next);
+  };
+  const [initialQuery] = useState(() => searchParams.get('q') || '');
+  const [queryInput, setQueryInput] = useState(initialQuery || initialTarget.name);
+  const [viewMode, setViewMode] = useState(searchParams.get('mode') || 'static');
   const [stretch, setStretch] = useState(searchParams.get('stretch') || 'zscale');
-  const [colormap, setColormap] = useState(searchParams.get('colormap') || 'inferno');
+  const [colormap, setColormap] = useState(searchParams.get('colormap') || 'grayscale');
   const [gain, setGain] = useState(1.0);
-  const [diffMode, setDiffMode] = useState(searchParams.get('diff') === 'true' || searchParams.get('mode') === 'diff');
+  const [diffMode, setDiffMode] = useState(!spherex && (searchParams.get('diff') === 'true' || searchParams.get('mode') === 'diff'));
 
   // Blink & progressive ring buffer state
   const [isPlaying, setIsPlaying] = useState(false);
   const [fps, setFps] = useState(3);
-  const [epochIdx, setEpochIdx] = useState(parseInt(searchParams.get('epoch') || '0', 10) || 0);
-  const [curtainPos, setCurtainPos] = useState(parseFloat(searchParams.get('curtain') || '0.5') || 0.5);
-  const [liveFrames, setLiveFrames] = useState(() => getCachedCutouts(initialTarget.ra, initialTarget.dec, initialTarget.fovArcmin) || []);
-  const [backendStatus, setBackendStatus] = useState(
-    getCachedCutouts(initialTarget.ra, initialTarget.dec, initialTarget.fovArcmin)?.length > 0 ? 'live' : 'connecting'
-  );
-  const [psfDiffResult, setPsfDiffResult] = useState(null);
-  const [psfLoading, setPsfLoading] = useState(false);
-
-  // Update target when searchParams change (e.g. from TargetsPage, Back, or deep links)
+  const [epochIdx, setEpochIdx] = useState(Math.max(0, parseInt(searchParams.get('epoch') || '0', 10) || 0));
+  const [curtainPos, setCurtainPos] = useState(Math.min(1, Math.max(0, Number(searchParams.get('curtain') ?? 0.5) || 0)));
+  const { frames: liveFrames, status: imageStatus, error: imageError, requestKey, retry } = useCutoutFrames(target);
+  const science = (spherex ? useSpherexFrames : useCutoutFrames)(target, { metadataOnly: true });
   useEffect(() => {
-    const tId = searchParams.get('target');
-    const ra = searchParams.get('ra');
-    const dec = searchParams.get('dec');
-    if (tId) {
-      const found = BENCHMARK_TARGETS.find((t) => t.id === tId);
-      if (found && found.id !== target.id) {
-        setTarget(found);
-        setQueryInput(found.name);
-        setSampleCoords({ ra: found.ra, dec: found.dec });
-        setEpochIdx(0);
-        return;
-      }
-    }
-    if (ra && dec) {
-      const r = parseFloat(ra);
-      const d = parseFloat(dec);
-      if (!isNaN(r) && !isNaN(d) && (Math.abs(r - target.ra) > 0.0001 || Math.abs(d - target.dec) > 0.0001)) {
-        const resolved = resolveQueryToTarget(`${r}, ${d}`, BENCHMARK_TARGETS);
-        setTarget(resolved);
-        setQueryInput(resolved.name);
-        setSampleCoords({ ra: resolved.ra, dec: resolved.dec });
-        setEpochIdx(0);
-      }
-    }
-  }, [searchParams]);
+    if (spherex && liveFrames.length < 2 && imageStatus !== 'loading') { setViewMode('static'); setIsPlaying(false); }
+  }, [spherex, liveFrames.length, imageStatus]);
+  const [psfState, setPsfDiffResult] = useState(null);
+  const psfDiffResult = psfState?.requestKey === requestKey ? psfState : null;
+  const [psfLoading, setPsfLoading] = useState(false);
+  const [diffError, setDiffError] = useState('');
+  const [bookmarkStatus, setBookmarkStatus] = useState('');
+  const [searchError, setSearchError] = useState('');
+  const [searching, setSearching] = useState(false);
+  const searchControllerRef = useRef(null);
+  const diffControllerRef = useRef(null);
+
+  useEffect(() => {
+    searchControllerRef.current?.abort();
+    diffControllerRef.current?.abort();
+    setPsfLoading(false);
+    setDiffError('');
+    setBookmarkStatus('');
+    return () => {
+      searchControllerRef.current?.abort();
+      diffControllerRef.current?.abort();
+    };
+  }, [requestKey]);
 
   const buildSceneUrl = (action = 'view') => {
     const params = new URLSearchParams({
-      ra: target.ra.toFixed(4),
-      dec: target.dec.toFixed(4),
-      fov: (target.fovArcmin || 5.0).toFixed(1),
+      ra: String(target.ra),
+      dec: String(target.dec),
+      fov: String(target.fovArcmin || 5),
       mode: diffMode ? 'diff' : viewMode,
       stretch,
       colormap,
@@ -123,12 +131,14 @@ export default function ExplorerPage() {
   const [apertureRadius, setApertureRadius] = useState(2);
   const [showLines, setShowLines] = useState(true);
   const [sampleOffset, setSampleOffset] = useState(0);
-  const [liveSpectrumBands, setLiveSpectrumBands] = useState(null);
+  const [spectrumState, setLiveSpectrumBands] = useState(null);
   const [crosshair, setCrosshair] = useState({ x: 256, y: 256 });
   const [sampleCoords, setSampleCoords] = useState({
     ra: initialTarget.ra,
     dec: initialTarget.dec
   });
+  const spectrumKey = JSON.stringify([requestKey, sampleCoords.ra, sampleCoords.dec, apertureRadius]);
+  const liveSpectrumBands = spectrumState?.key === spectrumKey ? spectrumState.bands : null;
   const [copiedLink, setCopiedLink] = useState(false);
   const [showHeaderModal, setShowHeaderModal] = useState(false);
   const [isRecordingBlink, setIsRecordingBlink] = useState(false);
@@ -156,6 +166,8 @@ export default function ExplorerPage() {
     if (!canvas || isRecordingBlink) return;
 
     try {
+      setViewMode('blink');
+      setDiffMode(false);
       if (!isPlaying) {
         setIsPlaying(true);
       }
@@ -226,6 +238,15 @@ export default function ExplorerPage() {
   const canvasPrimaryRef = useRef(null);
   const canvasSecondaryRef = useRef(null);
   const workerRef = useRef(null);
+  const currentRequestRef = useRef(requestKey);
+  const renderVersions = useRef({});
+  useLayoutEffect(() => {
+    currentRequestRef.current = requestKey;
+    renderVersions.current = {};
+    for (const canvas of [canvasPrimaryRef.current, canvasSecondaryRef.current]) {
+      if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    }
+  }, [requestKey]);
   const overlayRef = useRef({ crosshair, apertureRadius, curtainPos });
 
   useEffect(() => {
@@ -239,6 +260,7 @@ export default function ExplorerPage() {
     });
     worker.onmessage = (e) => {
       const { id, rgba, width, height } = e.data;
+      if (e.data.requestKey !== currentRequestRef.current || e.data.version !== renderVersions.current[id]) return;
       const targetCanvas =
         id === 'secondary' ? canvasSecondaryRef.current : canvasPrimaryRef.current;
       if (!targetCanvas) return;
@@ -249,13 +271,18 @@ export default function ExplorerPage() {
       const ctx = targetCanvas.getContext('2d');
       const imgData = new ImageData(rgba, width, height);
       ctx.putImageData(imgData, 0, 0);
+      ctx.fillStyle = '#08101e';
+      ctx.fillRect(0, height - 28, width, 28);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '12px sans-serif';
+      ctx.fillText(e.data.label || 'SIMULATED DEMO', 8, height - 10);
 
       const { crosshair: ch, apertureRadius: ap, curtainPos: cp } = overlayRef.current;
       const scaleFactor = width / 512;
       const cx = ch.x;
       const cy = ch.y;
 
-      ctx.strokeStyle = 'rgba(232, 141, 58, 0.9)';
+      ctx.strokeStyle = 'rgba(217, 181, 128, 0.9)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.arc(cx, cy, (ap * 9 + 6) * scaleFactor, 0, Math.PI * 2);
@@ -273,7 +300,7 @@ export default function ExplorerPage() {
 
       if (id === 'swipe') {
         const splitX = Math.floor(cp * width);
-        ctx.strokeStyle = '#eceae4';
+        ctx.strokeStyle = '#f0f2f5';
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(splitX, 0);
@@ -289,52 +316,25 @@ export default function ExplorerPage() {
   useEffect(() => {
     setSearchParams(
       {
-        ra: target.ra.toFixed(4),
-        dec: target.dec.toFixed(4),
-        fov: (target.fovArcmin || 5.0).toFixed(1),
-        epochA: target.epochs[0],
-        epochB: target.epochs[target.epochs.length - 1],
+        ra: String(target.ra),
+        dec: String(target.dec),
+        fov: String(target.fovArcmin || 5),
+        ...(!spherex ? { epochA: target.epochs[0], epochB: target.epochs[target.epochs.length - 1] } : {}),
         mode: viewMode,
         stretch,
         colormap,
         diff: diffMode ? 'true' : 'false',
         epoch: String(epochIdx),
         curtain: curtainPos.toFixed(2),
-        target: target.id
+        target: target.id,
+        name: target.name
       },
       { replace: true }
     );
   }, [target, viewMode, stretch, colormap, diffMode, epochIdx, curtainPos, setSearchParams]);
 
-  // Fetch base multi-epoch cutouts ONLY when target changes (never clear/flash during slider scrub)
-  useEffect(() => {
-    const controller = new AbortController();
-    setPsfDiffResult(null);
-
-    fetchCutoutsWithPolling(
-      {
-        ra: target.ra,
-        dec: target.dec,
-        fovArcmin: target.fovArcmin,
-        bands: [42]
-      },
-      (frames, isComplete) => {
-        if (!controller.signal.aborted && frames.length > 0) {
-          setLiveFrames(frames.slice(0, 16));
-          setBackendStatus('live');
-        }
-      },
-      controller.signal
-    ).catch(() => {
-      if (!controller.signal.aborted) {
-        setBackendStatus('offline');
-      }
-    });
-
-    return () => controller.abort();
-  }, [target]);
-
-  // Fetch 408-byte spectrum at clicked WCS coordinate (sampleCoords)
+  const hoverTime = useRef(0);
+  // Shared teaching-spectrum path for Explore and the legacy viewer; values are simulated.
   useEffect(() => {
     const controller = new AbortController();
     fetchSpectrumApi(
@@ -343,12 +343,12 @@ export default function ExplorerPage() {
       apertureRadius * 6.2,
       target.ra,
       target.dec,
-      target.fovArcmin
+      target.fovArcmin,
+      controller.signal
     )
       .then((res) => {
         if (!controller.signal.aborted) {
-          setLiveSpectrumBands(res.bands);
-          setBackendStatus('live');
+          setLiveSpectrumBands({ key: spectrumKey, bands: res.bands });
         }
       })
       .catch(() => {
@@ -382,6 +382,7 @@ export default function ExplorerPage() {
 
   // Pre-build offline fallback buffers per target so they never flicker
   const fallbackEpochs = useMemo(() => {
+    if (spherex) return [new Float32Array(512 * 512)];
     return target.epochs.map((_, idx) => generateStarfieldBuffer(target, idx, 512).buffer);
   }, [target]);
 
@@ -413,10 +414,16 @@ export default function ExplorerPage() {
     const bufB = useLive ? rawB : applyBandpassModulation(rawB, size, target, lastIdx, activeWavelength, sedRatio);
     const curBuf = useLive ? rawCur : applyBandpassModulation(rawCur, size, target, safeIdx, activeWavelength, sedRatio);
 
+    const levels = spherex && liveFrames.length ? computeCutLevels(Float32Array.from(liveFrames.flatMap(frame => Array.from(frame.buffer)))) : undefined;
     const dispatch = (id, buf) => {
       const copy = new Float32Array(buf);
+      const version = (renderVersions.current[id] || 0) + 1;
+      renderVersions.current[id] = version;
       workerRef.current.postMessage(
-        { id, buffer: copy, width: size, height: size, stretch, colormap, gain },
+        { id, version, requestKey, levels, buffer: copy, width: size, height: size, stretch, colormap, gain,
+          label: liveFrames.length && liveFrames.every(f => f.meta?.dataKind === 'observed')
+            ? spherex ? "Infrared context image · science measurements shown separately" : `Observed unWISE · ${liveFrames.map(f => observationDate(f.meta.epoch)).join(" / ")}`
+            : spherex ? (liveFrames.length ? 'SIMULATED DEMO / mixed context sources — see source details' : 'Context archive · loading image') : 'SIMULATED DEMO / mixed sources — see source details' },
         [copy.buffer]
       );
     };
@@ -467,85 +474,83 @@ export default function ExplorerPage() {
 
   const handleSearch = async (e) => {
     e.preventDefault();
+    searchControllerRef.current?.abort();
+    const controller = new AbortController();
+    searchControllerRef.current = controller;
+    setSearchError('');
+    setSearching(true);
     try {
-      const resolved = await resolveTargetApi(queryInput);
-      const nextTarget = {
-        id: `api-${resolved.ra.toFixed(2)}-${resolved.dec.toFixed(2)}`,
-        name: resolved.name,
-        ra: resolved.ra,
-        dec: resolved.dec,
-        hmsDms: `${resolved.ra.toFixed(4)} deg, ${resolved.dec.toFixed(4)} deg`,
-        fovArcmin: 5.0,
-        inSpherexFootprint: resolved.spherex_covered,
-        survey: resolved.spherex_covered ? 'SPHEREx 102-Band' : 'unWISE Fallback',
-        properMotion: '0.00 arcsec/yr (Resolved Celestial Object)',
-        spectralNote: resolved.spherex_covered ? 'SPHEREx 0.75–5.0 µm survey field' : 'unWISE multi-epoch fallback field',
-        dqFlag: 'NOMINAL',
-        motionDxPerEpoch: 0.0,
-        motionDyPerEpoch: 0.0,
-        variabilityAmp: 0.0,
-        iceDepth: { h2o: 0.05, pah: 0.0, co2: 0.02, co: 0.05 },
-        peakFluxMjy: 15.0,
-        epochs:
-          resolved.primary_survey_epochs?.length > 0
-            ? resolved.primary_survey_epochs.map((s) => s.slice(0, 7))
-            : (resolved.spherex_covered ? ['2025-05', '2025-11', '2026-05', '2026-10'] : ['2014-03', '2019-09', '2023-09'])
-      };
+      const query = queryInput.trim();
+      if (!query) throw new Error('Enter an object name or sky coordinates.');
+      let nextTarget = resolveQueryToTarget(query, BENCHMARK_TARGETS);
+      if (!nextTarget) {
+        const resolved = await resolveTargetApi(query, controller.signal);
+        controller.signal.throwIfAborted();
+        nextTarget = resolveQueryToTarget(`${resolved.ra}, ${resolved.dec}`, BENCHMARK_TARGETS);
+        if (!nextTarget) throw new Error('The resolver returned invalid coordinates.');
+        nextTarget = { ...nextTarget, name: resolved.name || query };
+      }
+      controller.signal.throwIfAborted();
       setTarget(nextTarget);
       setQueryInput(nextTarget.name);
       setSampleCoords({ ra: nextTarget.ra, dec: nextTarget.dec });
       setCrosshair({ x: 256, y: 256 });
-    } catch {
-      const local = resolveQueryToTarget(queryInput, BENCHMARK_TARGETS);
-      setTarget(local);
-      setQueryInput(local.name);
-      setSampleCoords({ ra: local.ra, dec: local.dec });
-      setCrosshair({ x: 256, y: 256 });
+      setEpochIdx(0);
+      setSampleOffset(0);
+    } catch (error) {
+      if (!controller.signal.aborted) setSearchError(error.message.startsWith('Resolve failed')
+        ? 'Could not resolve this object. Check the name, enter coordinates, or try again.' : error.message);
+    } finally {
+      if (searchControllerRef.current === controller) setSearching(false);
     }
-    setEpochIdx(0);
-    setSampleOffset(0);
   };
 
+  useEffect(() => {
+    if (initialQuery) void handleSearch({ preventDefault() {} });
+  }, []);
+
   const handlePsfConfirm = async () => {
-    if (liveFrames.length < 2) return;
+    if (liveFrames.length < 2 || psfLoading) return;
+    diffControllerRef.current?.abort();
+    const controller = new AbortController();
+    diffControllerRef.current = controller;
     setPsfLoading(true);
+    setDiffError('');
     try {
-      const firstKey = liveFrames[0].cache_key;
-      const lastKey = liveFrames[liveFrames.length - 1].cache_key;
-      const res = await fetchPsfDiffApi(firstKey, lastKey, 'alard_lupton');
-      setPsfDiffResult(res);
-      setDiffMode(true);
+      const res = await fetchPsfDiffApi(liveFrames[0].cache_key, liveFrames.at(-1).cache_key, 'alard_lupton', controller.signal);
+      if (!controller.signal.aborted) {
+        setPsfDiffResult({ ...res, requestKey });
+        setDiffMode(true);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) setDiffError('Could not compare these images. They must share a band, units and data kind. Please retry.');
     } finally {
-      setPsfLoading(false);
+      if (!controller.signal.aborted) setPsfLoading(false);
     }
   };
 
   const handleCanvasClick = (e) => {
     const canvas = e.currentTarget;
     const rect = canvas.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * canvas.width);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * canvas.height);
+    const x = Math.max(0, Math.min(511, Math.round(((e.clientX - rect.left) / rect.width) * canvas.width)));
+    const y = Math.max(0, Math.min(511, Math.round(((e.clientY - rect.top) / rect.height) * canvas.height)));
     setCrosshair({ x, y });
     setSampleOffset((x - canvas.width / 2) * 0.02 + (y - canvas.height / 2) * 0.02);
 
-    // Convert clicked (x, y) on 512x512 cutout to WCS (RA, Dec)
-    const degPerPx = (target.fovArcmin / 60) / canvas.width;
-    const cosDec = Math.max(0.1, Math.cos((target.dec * Math.PI) / 180));
-    const clickRa = ((target.ra - ((x - canvas.width / 2) * degPerPx) / cosDec) % 360 + 360) % 360;
-    const clickDec = Math.max(-90, Math.min(90, target.dec - (y - canvas.height / 2) * degPerPx));
-    setSampleCoords({ ra: clickRa, dec: clickDec });
+    const sky = gridToSky(x, y, target.ra, target.dec, target.fovArcmin || 5, canvas.width);
+    setSampleCoords(sky);
   };
 
   const handleExportCsv = () => {
-    const header = 'band_id,wavelength_um,flux_mjy,flux_err_mjy,quality_flag\n';
+    const header = 'data_kind,source,band_id,wavelength_um,flux_arbitrary,uncertainty,quality_flag\n';
     const rows = activeBands
-      .map((b) => `${b.bandId},${b.wavelength},${b.flux},${b.err},${b.qualityFlag}`)
+      .map((b) => `simulated,Synthetic-Demo,${b.bandId},${b.wavelength},${b.flux},,`)
       .join('\n');
     const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${target.id}_102band_sed.csv`;
+    a.download = `${target.id}_SIMULATED_sed.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -555,7 +560,10 @@ export default function ExplorerPage() {
       target: target.name,
       ra: target.ra,
       dec: target.dec,
-      survey: target.survey,
+      data_kind: 'simulated',
+      source: 'Synthetic-Demo',
+      units: 'arbitrary',
+      observation_date: null,
       aperture_px: apertureRadius,
       bands: activeBands
     };
@@ -563,7 +571,7 @@ export default function ExplorerPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${target.id}_sed.json`;
+    a.download = `${target.id}_SIMULATED_sed.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -580,79 +588,103 @@ export default function ExplorerPage() {
     bitpix: 16,
     bscale: 1,
     bzero: 0,
-    epoch: target.epochs[epochIdx % target.epochs.length],
-    provenance: target.survey
+    epoch: 'unknown',
+    provenance: 'Synthetic-Demo',
+    dataKind: 'simulated',
+    bunit: 'arbitrary'
   };
+  const [scienceIndex, setScienceIndex] = useState(0);
+  const scienceMeta = science.frames[scienceIndex % Math.max(1, science.frames.length)]?.meta;
+  const scienceDate = scienceMeta ? observationDate(scienceMeta.epoch) : science.status === 'loading' ? 'Loading SPHEREx dates…' : 'No SPHEREx date available';
   const activeCacheKey = liveFrames[epochIdx % Math.max(1, liveFrames.length)]?.cache_key;
 
   return (
-    <div className="explorer-shell">
+    <div className="explorer-shell mission-console">
+      <div className="spherex-masthead">
+      <div className="workspace-heading"><div><div className="eyebrow">SPHEREx / SKY EXPLORER</div><h1>Explore the infrared sky<span className="title-dot">.</span></h1></div><div className="console-status" role="status"><span className={`console-light ${imageStatus === 'ready' ? 'ready' : ''}`} aria-hidden="true" /><span>{imageStatus === 'ready' ? `${liveFrames.length} frames ready` : imageStatus === 'error' ? 'Image unavailable' : 'Loading images'}</span><span className="console-status-divider">/</span><span>RA {target.ra.toFixed(4)}° · DEC {target.dec.toFixed(4)}°</span></div></div>
+      <figure className="spherex-mission-image"><img src="/images/spherex-survey.jpg" alt="NASA artist’s concept of SPHEREx building a multiwavelength all-sky map from orbit" width="1400" height="787" /><figcaption><span>ALL-SKY SURVEY</span><a href="https://www.jpl.nasa.gov/images/pia26533-building-an-all-sky-map-with-spherex-artists-concept/" target="_blank" rel="noreferrer">NASA/JPL-Caltech ↗</a></figcaption></figure>
+      <div className="spherex-mission-strip" aria-label="Mission context, not local data coverage"><span>ALL-SKY SPECTROSCOPY</span><span><strong>102</strong> spectral bands</span><span><strong>0.75–5 µm</strong> near-infrared</span><span className="mission-strip-note">MISSION CONTEXT · COVERAGE VARIES</span></div>
+      </div>
+      {searchError && <p className="inline-error" role="alert">{searchError}</p>}
+      {diffError && <p className="inline-error" role="alert">{diffError}</p>}
       {/* Top Query & Provenance Toolbar */}
       <div className="explorer-toolbar">
-        <form className="search-group" onSubmit={handleSearch}>
+        <form className="search-group" onSubmit={handleSearch} role="search">
+          <Search size={17} aria-hidden="true" />
           <input
             className="coord-input"
             value={queryInput}
-            onChange={(e) => setQueryInput(e.target.value)}
-            placeholder="Name, decimal (133.79, -7.24), or HMS/DMS (08:55:10 -07:14:42)"
+            onChange={(e) => {
+              searchControllerRef.current?.abort();
+              setSearching(false);
+              setSearchError('');
+              setQueryInput(e.target.value);
+            }}
+            placeholder="Find an object or enter sky coordinates"
             aria-label="Coordinate or target search"
           />
           <button type="submit" className="btn-compact">
-            <Search size={13} /> Resolve
+            {searching ? 'Searching…' : 'Search'} <Search size={13} />
           </button>
         </form>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span className={`provenance-badge ${target.inSpherexFootprint ? 'spherex' : 'unwise'}`}>
-            {target.inSpherexFootprint
-              ? 'SPHEREx 102-Band'
-              : 'unWISE Multi-Epoch (SPHEREx Unobserved)'}
-          </span>
-          <span
-            className="mono"
-            style={{
-              fontSize: 11,
-              color: backendStatus === 'live' ? '#52b788' : '#98a0ad'
-            }}
-          >
-            {backendStatus === 'live' ? '● API Live' : '○ Offline Preview'}
-          </span>
           <button type="button" className="btn-compact" onClick={handleCopyDeepLink}>
             {copiedLink ? <Check size={13} /> : <Share2 size={13} />}
             {copiedLink ? 'Copied' : 'Share'}
           </button>
-          <Link to="/library" className="btn-compact" title="Open Personal Library">
-            <Bookmark size={13} /> Library
-          </Link>
+          <button type="button" className="btn-compact" onClick={() => {
+            const saved = saveLibraryItem({ name: target.name, ra: target.ra, dec: target.dec, fovArcmin: target.fovArcmin, mode: diffMode ? 'diff' : viewMode, stretch, colormap, activeWavelength,
+              observation: observationSnapshot(liveFrames, epochIdx, viewMode, diffMode)
+            });
+            setBookmarkStatus(saved ? 'Saved to your journal with source metadata.' : 'Could not save. Check browser storage.');
+          }}><Bookmark size={13} /> Save</button>
           <Link to="/targets" className="btn-compact">
-            Presets
+            Targets
           </Link>
         </div>
       </div>
 
+
+      {spherex && <div className="console-observation-row"><label className="mono" style={{ fontSize: 12 }}>Observation <select aria-label="SPHEREx observation date" value={scienceIndex % Math.max(1, science.frames.length)} disabled={!science.frames.length} onChange={event => setScienceIndex(Number(event.target.value))}>{science.frames.length ? science.frames.map((frame, index) => <option key={frame.meta.sourceUrl} value={index}>{observationDate(frame.meta.epoch)} · {frame.meta.spectralRange}</option>) : <option value={0}>{scienceDate}</option>}</select></label><span className="quiet-note">SPHEREx date · context image acquired separately.</span></div>}
+      <DataNotice spherex={spherex} scienceOnly={spherex} spectrumKind="simulated" frames={spherex ? science.frames : liveFrames} activeIndex={spherex ? scienceIndex : epochIdx} mode={spherex ? "static" : viewMode} difference={diffMode} target={target} colormap={colormap} stretch={stretch} status={spherex ? science.status : imageStatus} error={spherex ? science.error : imageError} onRetry={spherex ? science.retry : retry} />
+
+
+      <p className="bookmark-status" role="status">{bookmarkStatus}</p>
       {/* Main 2-Column Instrument Grid */}
       <div className="explorer-grid">
         {/* Left: 3-Mode Cutout Viewport */}
-        <section className="viewport-pane">
+        <section className="viewport-pane" aria-label="Observation viewer">
+          <div className="viewer-heading"><div><span className="eyebrow">01 / SKY VIEW</span><h2>{target.name}</h2></div><span className="field-coordinate">RA {target.ra.toFixed(4)}°<br />DEC {target.dec.toFixed(4)}°</span></div>
+          <WhatAmISeeing frames={displayedFrames(liveFrames, epochIdx, viewMode, diffMode)} difference={diffMode} />
           <div className="control-strip">
-            <div className="segmented" role="tablist" aria-label="Viewport Mode">
+            <div className="segmented" role="group" aria-label="Viewport Mode">
               <button
                 type="button"
+                disabled={spherex && liveFrames.length < 2}
+                title={spherex && liveFrames.length < 2 ? 'Two loaded exposures are needed' : undefined}
                 className={viewMode === 'blink' ? 'active' : ''}
+                aria-pressed={viewMode === 'blink'}
                 onClick={() => setViewMode('blink')}
               >
                 Blink
               </button>
               <button
                 type="button"
+                disabled={spherex && liveFrames.length < 2}
+                title={spherex && liveFrames.length < 2 ? 'Two loaded exposures are needed' : undefined}
                 className={viewMode === 'swipe' ? 'active' : ''}
+                aria-pressed={viewMode === 'swipe'}
                 onClick={() => setViewMode('swipe')}
               >
-                Split-Curtain
+                Swipe
               </button>
               <button
                 type="button"
+                disabled={spherex && liveFrames.length < 2}
+                title={spherex && liveFrames.length < 2 ? 'Two loaded exposures are needed' : undefined}
                 className={viewMode === 'side-by-side' ? 'active' : ''}
+                aria-pressed={viewMode === 'side-by-side'}
                 onClick={() => setViewMode('side-by-side')}
               >
                 Side-by-Side
@@ -660,18 +692,21 @@ export default function ExplorerPage() {
               <button
                 type="button"
                 className={viewMode === 'static' ? 'active' : ''}
+                aria-pressed={viewMode === 'static'}
                 onClick={() => {
                   setViewMode('static');
                   setIsPlaying(false);
                 }}
               >
-                Static Pictures
+                Still image
               </button>
             </div>
 
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <details className="advanced-image-tools"><summary>Image tools <SlidersHorizontal size={14} /></summary><div className="advanced-tools-content">
               <button
                 type="button"
+                disabled={spherex}
+                title={spherex ? 'Subtraction requires wavelength and PSF matching' : undefined}
                 className={`btn-compact ${diffMode ? 'active' : ''}`}
                 onClick={() => {
                   setDiffMode((d) => !d);
@@ -680,7 +715,7 @@ export default function ExplorerPage() {
               >
                 Δ Difference
               </button>
-              {liveFrames.length >= 2 && (
+              {!spherex && liveFrames.length >= 2 && (
                 <button
                   type="button"
                   className={`btn-compact ${psfDiffResult ? 'active' : ''}`}
@@ -688,7 +723,7 @@ export default function ExplorerPage() {
                   disabled={psfLoading}
                 >
                   <Sparkles size={12} />
-                  {psfLoading ? 'Matching…' : 'Confirm PSF-Match'}
+                  {psfLoading ? 'Matching…' : 'Fit subtraction'}
                 </button>
               )}
               <select
@@ -707,15 +742,17 @@ export default function ExplorerPage() {
                 onChange={(e) => setColormap(e.target.value)}
                 aria-label="Colormap"
               >
+                <option value="grayscale">Monochrome</option>
                 <option value="inferno">Map: Inferno</option>
                 <option value="viridis">Map: Viridis</option>
                 <option value="grayscale_r">Map: Grayscale_r</option>
               </select>
-            </div>
+            </div></details>
           </div>
 
           <div
             className="canvas-stage"
+            data-view={viewMode}
             style={
               viewMode === 'side-by-side' && !diffMode
                 ? { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: 8 }
@@ -724,16 +761,16 @@ export default function ExplorerPage() {
           >
             <div className="canvas-hud">
               <span className="hud-pill">
-                {target.name} · {target.ra.toFixed(4)}°, {target.dec.toFixed(4)}°
+                {target.name} · {String(target.ra)}°, {String(target.dec)}°
               </span>
               <span className="hud-pill">
-                {diffMode
+                {spherex ? `Context: ${activeFrameMeta.release || activeFrameMeta.provenance} · ${observationDate(activeFrameMeta.epoch)}` : diffMode
                   ? psfDiffResult
-                    ? `PSF-Matched Δ · Conf ${(psfDiffResult.meta.diffConfidence * 100).toFixed(0)}%`
+                    ? `Fitted difference · heuristic score ${psfDiffResult.meta.diffConfidence.toFixed(2)} (not a probability)`
                     : `Local Variance Δ (${target.epochs[0]} − ${target.epochs[target.epochs.length - 1]})`
                   : viewMode === 'swipe'
-                    ? `${target.epochs[0]} | ${target.epochs[target.epochs.length - 1]}`
-                    : `Epoch: ${activeFrameMeta.epoch?.slice(0, 10) || target.epochs[0]} · λ=${activeWavelength.toFixed(2)} µm (${Math.round(sedRatio * 100)}% flux)`}
+                    ? spherex ? "Context image comparison" : `${target.epochs[0]} | ${target.epochs[target.epochs.length - 1]}`
+                    : `Image date: ${observationDate(activeFrameMeta.epoch)} · ${activeFrameMeta.provenance}`}
               </span>
             </div>
 
@@ -742,10 +779,13 @@ export default function ExplorerPage() {
               width={512}
               height={512}
               onClick={handleCanvasClick}
+              onPointerMove={event => { if (event.pointerType === 'touch' && !event.buttons) return; const now = performance.now(); if (now - hoverTime.current < 60) return; hoverTime.current = now; handleCanvasClick(event); }}
+              onPointerDown={event => { if (event.pointerType !== 'mouse') event.currentTarget.setPointerCapture(event.pointerId); handleCanvasClick(event); }}
+              onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
               style={{
-                width: viewMode === 'side-by-side' && !diffMode ? '100%' : 'min(100%, 420px)',
+                width: '100%',
                 aspectRatio: '1 / 1',
-                cursor: 'crosshair'
+                cursor: 'crosshair', touchAction: 'pan-y'
               }}
             />
 
@@ -755,10 +795,13 @@ export default function ExplorerPage() {
                 width={512}
                 height={512}
                 onClick={handleCanvasClick}
+              onPointerMove={event => { if (event.pointerType === 'touch' && !event.buttons) return; const now = performance.now(); if (now - hoverTime.current < 60) return; hoverTime.current = now; handleCanvasClick(event); }}
+              onPointerDown={event => { if (event.pointerType !== 'mouse') event.currentTarget.setPointerCapture(event.pointerId); handleCanvasClick(event); }}
+              onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
                 style={{
                   width: '100%',
                   aspectRatio: '1 / 1',
-                  cursor: 'crosshair'
+                  cursor: 'crosshair', touchAction: 'pan-y'
                 }}
               />
             )}
@@ -766,7 +809,7 @@ export default function ExplorerPage() {
 
           {/* Transport / Curtain / Gain / FITS Controls */}
           <div
-            className="panel-box"
+            className="panel-box transport-panel"
             style={{
               display: 'flex',
               flexWrap: 'wrap',
@@ -807,7 +850,7 @@ export default function ExplorerPage() {
                 >
                   <SkipForward size={13} />
                 </button>
-                <label className="mono" style={{ fontSize: 11, color: '#98a0ad', marginLeft: 6 }}>
+                <label className="mono" style={{ fontSize: 11, color: '#a7b5c6', marginLeft: 6 }}>
                   {fps} Hz
                   <input
                     type="range"
@@ -832,8 +875,8 @@ export default function ExplorerPage() {
                   <SkipBack size={13} />
                   <span>Prev</span>
                 </button>
-                <span className="mono" style={{ fontSize: 11, color: '#e88d3a', padding: '0 6px', whiteSpace: 'nowrap' }}>
-                  {epochIdx + 1} / {frameCount} · {target.epochs?.[epochIdx] || `Epoch ${epochIdx + 1}`}
+                <span className="mono" style={{ fontSize: 11, color: '#d9b580', padding: '0 6px', whiteSpace: 'nowrap' }}>
+                  {epochIdx + 1} / {frameCount} · {spherex ? `Context: ${activeFrameMeta.release || "preview"}` : target.epochs?.[epochIdx] || `Epoch ${epochIdx + 1}`}
                 </span>
                 <button
                   type="button"
@@ -852,7 +895,7 @@ export default function ExplorerPage() {
                 className="mono"
                 style={{
                   fontSize: 11,
-                  color: '#98a0ad',
+                  color: '#a7b5c6',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 10,
@@ -875,7 +918,7 @@ export default function ExplorerPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <label
                 className="mono"
-                style={{ fontSize: 11, color: '#98a0ad', display: 'flex', alignItems: 'center', gap: 6 }}
+                style={{ fontSize: 11, color: '#a7b5c6', display: 'flex', alignItems: 'center', gap: 6 }}
               >
                 <SlidersHorizontal size={12} /> Gain {gain.toFixed(1)}×
                 <input
@@ -895,7 +938,7 @@ export default function ExplorerPage() {
                 disabled={isRecordingBlink}
                 title="Record a 5-second animated blink video clip (.webm / .mp4)"
               >
-                <Video size={12} style={{ color: isRecordingBlink ? '#e88d3a' : 'inherit' }} />
+                <Video size={12} style={{ color: isRecordingBlink ? '#d9b580' : 'inherit' }} />
                 <span>{isRecordingBlink ? `Recording (${blinkRecordProgress}/5s)...` : 'Blink Video'}</span>
               </button>
               <button type="button" className="btn-compact" onClick={() => setShowHeaderModal(true)}>
@@ -904,6 +947,7 @@ export default function ExplorerPage() {
               <Link
                 to={buildSceneUrl('view')}
                 className="btn-compact"
+                style={spherex ? { display: "none" } : undefined}
                 title="Inspect in full screen or record 5s clip in Scene View"
               >
                 <Maximize2 size={12} /> Scene View
@@ -919,13 +963,13 @@ export default function ExplorerPage() {
             </div>
           </div>
 
-          {/* Two Equal-Width Scene Action Buttons */}
+          {/* Scene actions */}
           <div
             style={{
               display: 'grid',
               gridTemplateColumns: '1fr 1fr',
-              gap: 12,
-              marginTop: 12
+              gap: 8,
+              marginTop: 0
             }}
           >
             <Link
@@ -937,8 +981,8 @@ export default function ExplorerPage() {
                 gap: 8,
                 padding: '12px 16px',
                 borderRadius: 8,
-                background: 'var(--card-bg, #161b22)',
-                border: '1px solid var(--border, #30363d)',
+                background: 'var(--card-bg, #0c1421)',
+                border: '1px solid var(--border, #25364a)',
                 color: '#e6edf3',
                 fontSize: 13,
                 fontWeight: 600,
@@ -946,7 +990,7 @@ export default function ExplorerPage() {
               }}
             >
               <Maximize2 size={16} />
-              <span>View in Full Screen</span>
+              <span>Full screen</span>
             </Link>
             <Link
               to={buildSceneUrl('edit')}
@@ -957,32 +1001,32 @@ export default function ExplorerPage() {
                 gap: 8,
                 padding: '12px 16px',
                 borderRadius: 8,
-                background: 'rgba(232, 141, 58, 0.12)',
-                border: '1px solid #e88d3a',
-                color: '#e88d3a',
+                background: 'rgba(217, 181, 128, 0.12)',
+                border: '1px solid #d9b580',
+                color: '#d9b580',
                 fontSize: 13,
                 fontWeight: 600,
                 textDecoration: 'none'
               }}
             >
               <Sparkles size={16} />
-              <span>Edit / Save the Scene</span>
+              <span>Scene settings</span>
             </Link>
           </div>
         </section>
 
-        {/* Right: 102-Band SED Profiler & Metadata */}
-        <section className="sed-pane">
-          <div className="panel-box">
+        {/* Right: Simulated spectrum Profiler & Metadata */}
+        <section className="sed-pane"><div className="console-section-label"><span>02 / SPECTRUM</span><span>WAVELENGTH & SIGNAL</span></div>
+          {<div className="panel-box spectrum-panel" id="spectrum">
             <div className="panel-header">
-              <span className="panel-title">102-Band Spectral Energy Distribution</span>
+              <span className="panel-title">Simulated spectrum · arbitrary units</span>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button
                   type="button"
                   className={`btn-compact ${showLines ? 'active' : ''}`}
                   onClick={() => setShowLines((s) => !s)}
                 >
-                  Ice Lines
+                  Markers
                 </button>
                 <button type="button" className="btn-compact" onClick={handleExportCsv}>
                   <Download size={12} /> CSV
@@ -993,17 +1037,19 @@ export default function ExplorerPage() {
               </div>
             </div>
 
-            <SpectrumChart
+            <p className="quiet-note">Teaching model · markers are references, not detections.</p>
+            {<SpectrumChart
               bands={activeBands}
               wiseBands={fallbackSpectrum.wiseBands}
-              inSpherexFootprint={target.inSpherexFootprint}
+              inSpherexFootprint={true}
               activeWavelength={activeWavelength}
               onSelectWavelength={setActiveWavelength}
               showLines={showLines}
-            />
-          </div>
-
-          <MocRadar
+            />}
+          </div>}
+          {spherex && <div className="panel-box cursor-panel"><div className="panel-header"><span className="panel-title">Cursor readout</span><span className="mono">{crosshair.x}, {crosshair.y} px</span></div><dl className="metadata-grid"><dt>Image value</dt><dd>{(() => { const frame = liveFrames[epochIdx % Math.max(1, liveFrames.length)]; const value = frame?.buffer[crosshair.y * 512 + crosshair.x]; return Number.isFinite(value) ? `${value.toPrecision(5)} ${frame.meta.bunit}` : 'No coverage'; })()}</dd><dt>Wavelength</dt><dd>{activeFrameMeta.wavelengthUm ? `${activeFrameMeta.wavelengthUm} µm` : 'Unavailable'}</dd><dt>Sky position</dt><dd>{sampleCoords.ra.toFixed(5)}°, {sampleCoords.dec.toFixed(5)}°</dd></dl><details className="cursor-help"><summary>How to read this</summary><p className="quiet-note">Image values are interpolated brightness. The spectrum is a separate teaching model, not chemical measurements. Uncertainties are not propagated into this preview.</p><Link className="text-link" to="/experiments?lab=spectrum">Learn to read a spectrum ↗</Link><p><a className="text-link" href="https://irsa.ipac.caltech.edu/onlinehelp/spherex/spherex/sp.html" target="_blank" rel="noreferrer">IRSA spectrophotometry ↗</a></p></details></div>}
+          <details className="science-details" open><summary>Sky map<span>SELECT POSITION</span></summary>
+          {<MocRadar
             currentRa={target.ra}
             currentDec={target.dec}
             ra={target.ra}
@@ -1026,18 +1072,18 @@ export default function ExplorerPage() {
                 hmsDms: `${coord.ra.toFixed(4)} deg, ${coord.dec.toFixed(4)} deg`,
                 fovArcmin: 5.0,
                 inSpherexFootprint: coord.inSpherexFootprint ?? coord.inMoc,
-                survey: (coord.inSpherexFootprint ?? coord.inMoc) ? 'SPHEREx 102-Band' : 'unWISE Fallback',
-                properMotion: '0.00 arcsec/yr (Coordinate Selection)',
-                spectralNote: 'Field sampled via Aitoff MOC Radar',
-                dqFlag: 'NOMINAL',
+                survey: spherex ? 'SPHEREx DR1 archive request' : 'unWISE request / simulation',
+                properMotion: 'Not measured by this app',
+                spectralNote: 'Sky-coordinate selection; coverage is established by archive results',
+                dqFlag: 'UNAVAILABLE',
                 motionDxPerEpoch: 0.0,
                 motionDyPerEpoch: 0.0,
                 variabilityAmp: 0.0,
                 iceDepth: { h2o: 0.05, pah: 0.0, co2: 0.02, co: 0.05 },
                 peakFluxMjy: 12.0,
                 epochs: (coord.inSpherexFootprint ?? coord.inMoc)
-                  ? ['2025-05', '2025-11', '2026-05', '2026-10']
-                  : ['2014-03', '2019-09', '2023-09']
+                  ? ['allwise', 'neo2', 'neo5']
+                  : ['allwise', 'neo2', 'neo5']
               };
               setTarget(newT);
               setQueryInput(newT.name);
@@ -1045,13 +1091,14 @@ export default function ExplorerPage() {
               setCrosshair({ x: 256, y: 256 });
               setEpochIdx(0);
             }}
-          />
+          />}
+          </details>
 
-          <div className="panel-box">
+          {<details className="science-details"><summary>Spectrum controls<span>APERTURE &amp; WAVELENGTH</span></summary><div className="panel-box">
             <div className="panel-header">
               <span className="panel-title">Aperture &amp; Wavelength Controls</span>
-              <span className="mono" style={{ fontSize: 11, color: '#656d7a' }}>
-                DQ: {target.dqFlag}
+              <span className="mono" style={{ fontSize: 11, color: '#8698ad' }}>
+                DQ: unavailable
               </span>
             </div>
 
@@ -1060,7 +1107,7 @@ export default function ExplorerPage() {
                 className="mono"
                 style={{
                   fontSize: 11.5,
-                  color: '#98a0ad',
+                  color: '#a7b5c6',
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center'
@@ -1082,14 +1129,14 @@ export default function ExplorerPage() {
                 className="mono"
                 style={{
                   fontSize: 11.5,
-                  color: '#98a0ad',
+                  color: '#a7b5c6',
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center'
                 }}
               >
                 <span>
-                  Bandpass Slice: {activeWavelength.toFixed(2)} µm ({Math.round(sedRatio * 100)}% peak)
+                  Teaching wavelength: {activeWavelength.toFixed(2)} µm ({Math.round(sedRatio * 100)}% peak)
                 </span>
                 <input
                   type="range"
@@ -1104,20 +1151,24 @@ export default function ExplorerPage() {
             </div>
           </div>
 
-          <div className="panel-box">
+          </details>}
+      {spherex && <details className="console-data-guide"><summary>Data sources & interpretation</summary><p className="quiet-note">SPHEREx DR1 supplies the observation dates and science metadata. The spectrum graph is a separate simulated learning model. Reference markers are not chemical detections. The context image shows the same requested coordinates from a separate survey and observing period. <a href="https://irsa.ipac.caltech.edu/Missions/spherex.html" target="_blank" rel="noreferrer">SPHEREx archive ↗</a></p></details>}
+      {spherex && <details className="science-details"><summary>Context image source</summary><DataNotice spectrumKind="simulated" frames={liveFrames} activeIndex={epochIdx} mode={viewMode} target={target} colormap={colormap} stretch={stretch} status={imageStatus} error={imageError} onRetry={retry} /></details>}
+          <details className="science-details"><summary>Technical details<span>COORDINATES &amp; METADATA</span></summary><div className="panel-box">
             <div className="panel-header">
-              <span className="panel-title">WCS &amp; Target Telemetry</span>
-              <span className="mono" style={{ fontSize: 11, color: '#52b788' }}>
-                {liveFrames.length > 0 ? `${activeFrameMeta.width}×${activeFrameMeta.height} uint16` : '512×512 TAN'}
+              <span className="panel-title">{spherex ? "SPHEREx observation metadata" : "WCS & Target Telemetry"}</span>
+              <span className="mono" style={{ fontSize: 11, color: '#8cbaa8' }}>
+                {liveFrames.length > 0 ? `${activeFrameMeta.width}×${activeFrameMeta.height} context display pixels` : '512×512 TAN'}
               </span>
             </div>
-            <div className="mono" style={{ fontSize: 12, display: 'grid', gap: 6, color: '#98a0ad' }}>
+            <div className="mono" style={{ fontSize: 12, display: 'grid', gap: 6, color: '#a7b5c6' }}>
               <div>ICRS: {target.hmsDms}</div>
               <div>Sampled: {sampleCoords.ra.toFixed(4)}°, {sampleCoords.dec.toFixed(4)}°</div>
               <div>Motion: {target.properMotion}</div>
-              <div>Notes: {target.spectralNote}</div>
+              {spherex ? <><div>Observed: {scienceDate}</div><div>Source: {scienceMeta?.provenance || 'Not loaded'}</div><div>Release: {scienceMeta?.release || 'Not loaded'}</div><div>Detector range: {scienceMeta?.spectralRange || 'Not loaded'}</div><div>Pixel units: {scienceMeta?.bunit || 'Not loaded'}</div></> : <div>Notes: {target.spectralNote}</div>}
             </div>
           </div>
+          </details>
         </section>
       </div>
 

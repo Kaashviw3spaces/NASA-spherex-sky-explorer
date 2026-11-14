@@ -32,7 +32,7 @@ def reproject_to_tangent_grid(
     """
     Regrid an arbitrary astronomical cutout (e.g., SPHEREx ~6.2"/px or WISE ~2.75"/px)
     onto a standardized tangent-plane WCS grid using Astropy WCS transformations
-    and flux-conserving spline interpolation.
+    and bilinear interpolation (not integrated-flux conserving).
     """
     out_h, out_w = out_shape
     target_wcs = build_tan_wcs(target_ra, target_dec, out_w, out_h, pixel_scale_arcsec)

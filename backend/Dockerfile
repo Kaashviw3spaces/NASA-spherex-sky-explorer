@@ -6,6 +6,7 @@ RUN useradd -m -u 1000 user
 USER user
 ENV PATH="/home/user/.local/bin:${PATH}"
 ENV PORT=8000
+ENV SPHEREX_CACHE_DIR=/home/user/.cache/spherex
 
 COPY --chown=user requirements.txt .
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
