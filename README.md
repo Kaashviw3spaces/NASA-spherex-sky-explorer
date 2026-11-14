@@ -1,10 +1,38 @@
-# SPHEREx Sky Explorer
+<div align="center">
+
+# ✦ SPHEREx Sky Explorer
+
+**Explore the infrared sky. Follow a question. Keep your discoveries.**
+
+[![Project checks](https://github.com/Kaashviw3spaces/NASA-spherex-sky-explorer/actions/workflows/checks.yml/badge.svg)](https://github.com/Kaashviw3spaces/NASA-spherex-sky-explorer/actions/workflows/checks.yml)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=61DAFB&labelColor=101C2C)
+![Vite](https://img.shields.io/badge/Vite-6-A78BFA?style=flat-square&logo=vite&logoColor=A78BFA&labelColor=101C2C)
+![FastAPI](https://img.shields.io/badge/FastAPI-Python-60C5B5?style=flat-square&logo=fastapi&logoColor=60C5B5&labelColor=101C2C)
+![Docker](https://img.shields.io/badge/Docker-Compose-8BB8D4?style=flat-square&logo=docker&logoColor=8BB8D4&labelColor=101C2C)
+
+<img src="frontend/public/images/spherex-space-enhanced.jpg" alt="SPHEREx-inspired telescope illustration above Earth's blue atmospheric limb" width="100%" />
+
+<sub>AI-assisted mission illustration based on NASA/JPL-Caltech reference artwork · not telescope data · <a href="frontend/public/images/CREDITS.md">Image credits</a></sub>
+
+**[Get started](#run-locally) · [Architecture](#architecture) · [Data sources](#understand-the-data-first) · [Deploy](#production-deployment) · [Tests](#tests-and-verification)**
+
+![Astronomy](https://img.shields.io/badge/astronomy-132638?style=flat-square&labelColor=132638&color=132638)
+![Infrared](https://img.shields.io/badge/infrared-D8B26E?style=flat-square&labelColor=132638)
+![Scientific visualization](https://img.shields.io/badge/scientific_visualization-8BB8D4?style=flat-square&labelColor=132638)
+![Interactive learning](https://img.shields.io/badge/interactive_learning-BDA8D9?style=flat-square&labelColor=132638)
+![Public archives](https://img.shields.io/badge/public_archives-8CBAA8?style=flat-square&labelColor=132638)
+
+</div>
+
+---
 
 A public-facing astronomy exploration and learning platform built with **React, Vite, and FastAPI**. Explore infrared sky images, inspect observation metadata, compare available frames, experiment with light, and keep a personal discovery journal.
 
 This is an independent educational project inspired by NASA’s SPHEREx mission. It is not an official NASA application and does not claim verified planet discoveries or chemical detections.
 
-## What you can do
+<a id="what-you-can-do"></a>
+
+## 🔭 What you can do
 
 | Experience | Route | What it provides |
 | --- | --- | --- |
@@ -21,7 +49,9 @@ This is an independent educational project inspired by NASA’s SPHEREx mission.
 
 Old `/spherex` links redirect to `/explorer`, retaining their query parameters. The separate observations page has been retired.
 
-## Understand the data first
+<a id="understand-the-data-first"></a>
+
+## 🛰️ Understand the data first
 
 The app combines several **distinct** data paths. Observations, illustrations, and educational models are not interchangeable.
 
@@ -45,9 +75,12 @@ The experimental extraction accepts pixels with only the informational `SOURCE` 
 
 References: [SPHEREx at NASA](https://science.nasa.gov/mission/spherex/), [IRSA SPHEREx archive](https://irsa.ipac.caltech.edu/Missions/spherex.html), [IRSA data access](https://caltech-ipac.github.io/spherex-archive-documentation/spherex-data-access/), [IRSA data products](https://caltech-ipac.github.io/spherex-archive-documentation/spherex-data-products/), [unWISE](https://unwise.me/).
 
-## Architecture
+<a id="architecture"></a>
+
+## 🧭 Architecture
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#07090E", "primaryColor": "#132638", "primaryTextColor": "#E8EDF4", "primaryBorderColor": "#D8B26E", "lineColor": "#8BB8D4", "secondaryColor": "#193B3C", "tertiaryColor": "#2B243D", "fontFamily": "Arial"}}}%%
 flowchart TB
     User[Browser user] --> Router[React Router / App.jsx]
     Router --> Explore[Explore and Scene Studio]
@@ -67,6 +100,14 @@ flowchart TB
     Client --> Canvas[Canvas 2D / raster worker]
     Learning --> Models[scienceModels.js / educational simulations]
     Journal --> Local[Browser localStorage]
+    classDef gold fill:#30291B,stroke:#D8B26E,color:#F1D7A7
+    classDef blue fill:#132638,stroke:#8BB8D4,color:#D9EBFA
+    classDef green fill:#193B3C,stroke:#8CBAA8,color:#D6EEE2
+    classDef violet fill:#2B243D,stroke:#BDA8D9,color:#EAE0F6
+    class User,Router,Explore gold
+    class Client,API,WCS,Cache,Canvas blue
+    class Context,SPX,unWISE,IRSA,Names,Catalog green
+    class Learning,Models,Journal,Local violet
 ```
 
 ### Context-image request flow
@@ -74,6 +115,7 @@ flowchart TB
 `useCutoutFrames.js` associates frames with the exact request identity, so changing coordinates cannot expose a previous target’s result. The client publishes frames progressively and caches complete results.
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#07090E", "primaryColor": "#132638", "primaryTextColor": "#E8EDF4", "primaryBorderColor": "#D8B26E", "lineColor": "#8BB8D4", "secondaryColor": "#193B3C", "tertiaryColor": "#2B243D", "fontFamily": "Arial"}}}%%
 flowchart TD
     Search[Object name or coordinates] --> Resolve[Resolve and validate RA / Dec / field of view]
     Resolve --> Valid{Valid pointing?}
@@ -99,6 +141,7 @@ Archive release names (`allwise`, `neo2`, `neo5`, `neo7`) are not precise observ
 ### Real SPHEREx integration
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#07090E", "primaryColor": "#132638", "primaryTextColor": "#E8EDF4", "primaryBorderColor": "#D8B26E", "lineColor": "#8BB8D4", "secondaryColor": "#193B3C", "tertiaryColor": "#2B243D", "fontFamily": "Arial"}}}%%
 sequenceDiagram
     participant Browser
     participant API as FastAPI
@@ -117,9 +160,12 @@ sequenceDiagram
 
 Discovery results are cached for 10 minutes, previews for one hour, with bounded in-process caches and concurrent-request coalescing. Preview downloads are limited to 32 MB. The frontend additionally retains a bounded recent-preview cache and can load comparison exposures concurrently. A first visit still depends on IRSA availability and download speed.
 
-## Learning design
+<a id="learning-design"></a>
+
+## 🧪 Learning design
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#07090E", "primaryColor": "#132638", "primaryTextColor": "#E8EDF4", "primaryBorderColor": "#D8B26E", "lineColor": "#8BB8D4", "secondaryColor": "#193B3C", "tertiaryColor": "#2B243D", "fontFamily": "Arial"}}}%%
 flowchart LR
     Ask[ASK / make a prediction] --> Explore[EXPLORE / adjust a model]
     Explore --> Observe[OBSERVE / inspect the change]
@@ -139,7 +185,9 @@ flowchart LR
 
 Sticky instruments unpin on smaller screens. Native scroll choreography, keyboard interactions, focus indicators, and reduced-motion alternatives are included. There is no scroll hijacking.
 
-## Project structure
+<a id="project-structure"></a>
+
+## 🗂️ Project structure
 
 ```text
 backend/
@@ -166,7 +214,9 @@ compose.yaml               Combined production frontend/API deployment
 
 Historical proposals in `docs/designs/` describe earlier aspirations. Use the implementation and this README for current behavior.
 
-## Run locally
+<a id="run-locally"></a>
+
+## ⚙️ Run locally
 
 Prerequisites: **Node.js 22+**, npm, and Python with a virtual environment. The production container and CI target **Python 3.12**. Internet access is needed for archive requests; no API key is required for the current public-data integrations.
 
@@ -199,7 +249,9 @@ npm run dev
 
 Vite’s `/api` proxy is configured in `frontend/vite.config.js`. If port 8000 is occupied, change the proxy target and backend port together. Dependency folders and virtual environments are intentionally not committed.
 
-## API reference
+<a id="api-reference"></a>
+
+## 📡 API reference
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
@@ -219,7 +271,9 @@ Vite’s `/api` proxy is configured in `frontend/vite.config.js`. If port 8000 i
 
 Full request schemas and validation bounds are available in `/docs`.
 
-## Saved work and deep links
+<a id="saved-work-and-deep-links"></a>
+
+## 📓 Saved work and deep links
 
 The journal uses browser-local persistence, without authentication or a database:
 
@@ -238,7 +292,9 @@ Example pointing links:
 /experiments?lab=redshift
 ```
 
-## Production deployment
+<a id="production-deployment"></a>
+
+## 🚀 Production deployment
 
 ```bash
 docker compose up --build -d
@@ -249,6 +305,7 @@ docker compose logs
 Open `http://localhost:8080`. Set `WEB_PORT` to change the public port. Nginx serves the production bundle, preserves SPA deep links, and proxies `/api` to the private backend. The backend has a health check. Stop with `docker compose down`.
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"background": "#07090E", "primaryColor": "#132638", "primaryTextColor": "#E8EDF4", "primaryBorderColor": "#D8B26E", "lineColor": "#8BB8D4", "secondaryColor": "#193B3C", "tertiaryColor": "#2B243D", "fontFamily": "Arial"}}}%%
 flowchart LR
     Visitor[Browser] --> HTTPS[Hosting-provider HTTPS / reverse proxy]
     HTTPS --> Web[Nginx / frontend container]
@@ -261,7 +318,9 @@ Configure HTTPS and service sizing on your hosting platform. Raster caches are d
 
 The Vercel SPA configuration alone does not deploy the Python backend or its API proxy; the combined Compose deployment is the complete included setup.
 
-## Tests and verification
+<a id="tests-and-verification"></a>
+
+## ✅ Tests and verification
 
 ```bash
 npm --prefix frontend test
@@ -274,6 +333,8 @@ The frontend uses Node’s built-in test runner and Vite-based in-memory renderi
 
 GitHub Actions runs frontend tests/build and backend tests on pushes and pull requests. Local browser checks separately exercise key interactions, responsive layouts, and reduced-motion behavior. Automated passes do not establish astrophysical calibration, complete coverage, or continuous availability of external archives.
 
-## Assets and attribution
+<a id="assets-and-attribution"></a>
+
+## ✨ Assets and attribution
 
 See [image credits](frontend/public/images/CREDITS.md) for source URLs and processing notes. The homepage uses an AI-assisted artist’s concept derived from an official SPHEREx visualization, with a 3840×2160 upscaled export and a responsive version. It is not an official NASA image, spacecraft photograph, or observation. The navigation logo was supplied by the project owner. Webb images elsewhere retain their own telescope and processing credits.
