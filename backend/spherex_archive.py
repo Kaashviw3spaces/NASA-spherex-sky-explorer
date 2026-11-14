@@ -98,7 +98,7 @@ def decode_image(content, ra=None, dec=None, fov=5):
                 spectral = np.where(np.isfinite(values), values, None).tolist()
             except (KeyError, ValueError, TypeError):
                 spectral = None
-            processing = '128 × 128 common north-up TAN grid; bilinear interpolation, not integrated-flux conserving. Shared display stretch for comparisons. Quality flags and variance are in source FITS, not applied to this preview.'
+            processing = '128 × 128 common north-up TAN grid; bilinear interpolation, not integrated-flux conserving. Shared display stretch for comparisons. Statistical uncertainties are not propagated through resampling.'
         finite = np.isfinite(data)
         # Preserve invalid pixels as null, not a fabricated zero measurement.
         pixels = np.where(finite, data, None).tolist()
