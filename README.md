@@ -352,6 +352,12 @@ Configure HTTPS and service sizing on your hosting platform. Raster caches are d
 
 The Vercel SPA configuration alone does not deploy the Python backend or its API proxy; the combined Compose deployment is the complete included setup.
 
+### Production bundle
+
+[`frontend/vite.config.js`](frontend/vite.config.js) uses Rollup `manualChunks` to separate the application, React/router runtime, and Lucide icons. React and its router remain together to avoid interdependent runtime chunks. The configuration leaves server-rendered test builds unchanged.
+
+The latest local production build emits approximately **233 kB of application JavaScript**, **263 kB of React/router JavaScript**, and **15 kB of icons**, before gzip. Every emitted JavaScript chunk is below Vite’s default 500 kB warning threshold. Splitting improves cache reuse and keeps individual files smaller; it does not substantially reduce the total JavaScript fetched on a first visit. Sizes may change as features are added.
+
 <a id="tests-and-verification"></a>
 
 ## ✅ Tests and verification
@@ -365,6 +371,8 @@ docker compose config --quiet
 
 The frontend uses Node’s built-in test runner and Vite-based in-memory rendering, with no new test framework. Coverage includes pointing validation, transport cancellation/polling, cache identity, missing pixels, scene settings, spectral model features, scroll mathematics, and actual page rendering. Backend tests cover API validation, mocked archive transport, FITS provenance/export, reprojection, and extraction/cache behavior.
 
+Latest local checks: **45 frontend tests passed**, **45 backend tests passed**, and the production frontend build passed. The emitted React/router and icon modules also loaded successfully in an import check. This records local verification; final public deployment and the five-beginner study still need their own checks, as tracked in [submission evidence](docs/submission-checks.md).
+
 GitHub Actions runs frontend tests/build, backend tests, and a production Docker Compose smoke check on pushes and pull requests. Local browser checks separately exercise key interactions, responsive layouts, and reduced-motion behavior. Automated passes do not establish astrophysical calibration, complete coverage, or continuous availability of external archives.
 
 <a id="assets-and-attribution"></a>
@@ -372,3 +380,5 @@ GitHub Actions runs frontend tests/build, backend tests, and a production Docker
 ## ✨ Assets and attribution
 
 See [image credits](frontend/public/images/CREDITS.md) for source URLs and processing notes. The homepage uses an AI-assisted artist’s concept derived from an official SPHEREx visualization, with a 3840×2160 upscaled export and a responsive version. It is not an official NASA image, spacecraft photograph, or observation. The navigation logo was supplied by the project owner. Webb images elsewhere retain their own telescope and processing credits.
+
+Learn’s March/May SPHEREx previews are rendered from the real, verified IRSA FITS inputs recorded in [`investigation.json`](frontend/src/data/investigation.json). Both use a shared grayscale/asinh stretch on a 128-pixel display grid; enlargement adds no telescope resolution. Reproduce them with `backend/.venv/bin/python backend/export_learning_previews.py` after running the matched-investigation verifier. The SVG motion, observation-label and foreground-light diagrams are labelled teaching illustrations.
