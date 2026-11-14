@@ -12,8 +12,8 @@ function WarmTarget({ target, onDone }) {
   return null;
 }
 // One target at a time, after the initial viewer has had time to start.
-export default function PresetPreloader() {
+export default function PresetPreloader({enabled = true}) {
   const [index, setIndex] = useState(-1);
-  useEffect(() => { const timer = setTimeout(() => setIndex(0), 3000); return () => clearTimeout(timer); }, []);
-  return index >= 0 && index < 5 ? <WarmTarget key={index} target={BENCHMARK_TARGETS[index]} onDone={() => setIndex(index + 1)} /> : null;
+  useEffect(() => { if (!enabled || index >= 0) return; const timer = setTimeout(() => setIndex(0), 3000); return () => clearTimeout(timer); }, [enabled, index]);
+  return enabled && index >= 0 && index < 5 ? <WarmTarget key={index} target={BENCHMARK_TARGETS[index]} onDone={() => setIndex(index + 1)} /> : null;
 }

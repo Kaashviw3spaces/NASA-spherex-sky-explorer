@@ -9,8 +9,8 @@ export default function DataNotice({ frames = [], activeIndex = 0, mode = 'stati
   return <aside className="data-notice" aria-label={scienceOnly ? "SPHEREx science observations at requested coordinates" : "Data for the displayed image"}>
     <div className="data-status-line">
       <span className={`source-indicator ${observed === selected.length && observed ? 'observed' : ''}`}><span className="status-dot" />{scienceOnly && observed ? "SPHEREx archive records" : source}</span>
-      {!scienceOnly && <span className="spectrum-disclosure">Spectrum: {spectrumKind === "measured" ? "SPHEREx samples" : "simulation"}</span>}
-      <span className="request-status" role="status" aria-live="polite">{status === 'loading' ? (scienceOnly ? 'Loading dates…' : 'Loading images…') : status === 'ready' ? (scienceOnly ? 'Dates ready' : 'Images ready') : ''}</span>
+      {!scienceOnly && <span className="spectrum-disclosure">Spectrum: {spectrumKind === "measured" ? "SPHEREx samples" : spectrumKind === 'unavailable' ? 'select SPHEREx' : "simulation"}</span>}
+      <span className="request-status" role="status" aria-live="polite">{status === 'loading' ? (scienceOnly ? 'Loading dates…' : frames.length ? `${frames.length} images loaded · retrieving more…` : 'Loading images…') : status === 'ready' ? (scienceOnly ? 'Dates ready' : 'Images ready') : frames.length ? `${frames.length} images available` : ''}</span>
       <details className="source-details"><summary><Info size={13} /> {scienceOnly ? "SPHEREx dates & data" : "About this data"} <ChevronDown size={12} /></summary><div className="source-details-body">
         <h3>{target?.name || 'Current view'}{selected.length > 1 ? ' · comparison inputs' : ''}</h3>
         <p>{difference || mode === 'diff' ? 'A processed difference of the first and last available frames; not a validated detection.' : selected.length > 1 ? 'First and last available frames, shown together.' : scienceOnly ? 'SPHEREx records at this position. Dates do not describe the context image.' : 'Metadata for the currently displayed frame.'}</p>
@@ -30,7 +30,7 @@ export default function DataNotice({ frames = [], activeIndex = 0, mode = 'stati
           </dl>{url && <a className="text-link" href={url} target="_blank" rel="noreferrer">Open original archive request ↗</a>}</section>;
         })}
         {!scienceOnly && <p>Display: {colormap || 'color map not supplied'} · {stretch || 'stretch not supplied'}. Assigned display colors are not naked-eye colors. Brightness stretch changes appearance, not source measurements.</p>}
-        <p>{scienceOnly ? "Source: NASA/IPAC IRSA · SPHEREx DR1." : spherex ? "Real SPHEREx DR1 spectral images, resampled to a common sky grid. Dates refer to SPHEREx exposures, not the separate context image. The separate graph is a simulated teaching spectrum." : "Archive rasters are resampled and quantized display products. Release names are not exact observing dates. This legacy viewer uses unWISE; the separate spectrum is simulated."}</p>
+        <p>{scienceOnly ? "Source: NASA/IPAC IRSA · SPHEREx DR1." : spherex ? "Real SPHEREx DR1 images on a common sky grid. Dates describe the selected exposures; the graph reads separate native-pixel SPHEREx channels." : "Archive rasters are resampled display products. Release names are not exact observing dates. Select SPHEREx for its measured infrared channels."}</p>
       </div></details>
     </div>
     {error && <div className="request-error" role="alert"><p>{error} {frames.length ? 'Showing available images.' : spherex ? 'No synthetic replacement is shown.' : 'Showing a simulated preview.'}</p><button type="button" className="btn-compact" onClick={onRetry}>Retry images</button></div>}

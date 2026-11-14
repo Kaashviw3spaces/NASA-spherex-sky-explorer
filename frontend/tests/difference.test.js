@@ -1,8 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { comparisonIssue } from '../src/utils/observationContext.js';
+import { comparisonIssue, comparisonPair } from '../src/utils/observationContext.js';
 import { computeDifferenceBuffer } from '../src/utils/astronomyRenderer.js';
 const frame = (key, changes={}) => ({cache_key:key,meta:{dataKind:'observed',bandIndex:1,bunit:'unknown',width:512,height:512,...changes}});
+test('comparison pair is distinct and explicit selections select the actual input buffers', () => {
+  const a=frame('a'),b=frame('b'),c=frame('c');
+  assert.deepEqual(comparisonPair([a,a]),[a]);
+  assert.deepEqual(comparisonPair([a,b,c]),[a,c]);
+  assert.deepEqual(comparisonPair([a,b,c],'b','a'),[b,a]);
+  assert.deepEqual(comparisonPair([a,b],'a','a'),[a,b]);
+});
 test('subtraction requires two compatible cached frames', () => {
   assert.ok(comparisonIssue([]));
   assert.ok(comparisonIssue([frame('a')]));

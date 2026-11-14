@@ -2,6 +2,7 @@ import useHeroAcquisition from '../hooks/useHeroAcquisition';
 import useHomeChoreography from '../hooks/useHomeChoreography';
 import { BENCHMARK_TARGETS } from '../data/catalog';
 import SkyScrollStory from '../components/SkyScrollStory';
+import { INVESTIGATION_LINK } from '../data/investigation';
 import { Link, useNavigate } from 'react-router-dom';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { ArrowRight, ArrowUpRight, Search, Telescope, Layers, Waves } from 'lucide-react';
@@ -223,7 +224,7 @@ export default function HomePage() {
               </div>
             )}
           </div>
-          <Link className="first-mission-link" to="/missions/invisible-universe">New here? Start a five-minute investigation <ArrowRight size={14} /></Link></div>
+          <Link className="first-mission-link" to="/missions/changing-sky">New here? Start an eight-minute investigation <ArrowRight size={14} /></Link></div>
         </div>
         <div className="hero-coordinate" aria-hidden="true"><span>SPHEREx</span><div className="coordinate-cross" /><span>LOW EARTH ORBIT</span></div>
         <a className="scroll-cue" href="#discover">SCROLL TO DISCOVER <ArrowRight size={13} /></a>
@@ -239,15 +240,15 @@ export default function HomePage() {
         <div className="discovery-grid">
           {[
             { icon: Telescope, number: '01', title: 'Find your patch of sky', text: 'Start with a star, an object name, or a set of coordinates. Browse real SPHEREx DR1 observations from IRSA.', link: '/explorer', cta: 'Explore the sky' },
-            { icon: Layers, number: '02', title: 'Let time tell a story', text: 'Blink between image releases or slide one over another. Look closer at what changes.', link: '/explorer?mode=swipe', cta: 'Compare images' },
-            { icon: Waves, number: '03', title: 'Read between the wavelengths', text: 'Use an interactive, simulated spectrum to see how light can tell a story beyond a photograph.', link: '/explorer#spectrum', cta: 'Explore a spectrum' }
+            { icon: Layers, number: '02', title: 'Let time tell a story', text: 'Compare two real SPHEREx exposures from March and May. Investigate what could explain the difference.', link: INVESTIGATION_LINK, cta: 'Compare real images' },
+            { icon: Waves, number: '03', title: 'Question the difference', text: 'Learn to read an image, compare fairly and record a conclusion supported by the available evidence.', link: '/learn#read-image', cta: 'Read the field guide' }
           ].map(({ icon: Icon, number, title, text, link, cta }) => <Link className="discovery-card" key={number} to={link}><div className="card-top"><Icon size={25} strokeWidth={1} /><span>{number} /</span></div><h3>{title}</h3><p>{text}</p><span className="card-cta">{cta}<ArrowUpRight size={16} /></span></Link>)}
         </div>
       </section>
       <SkyScrollStory />
-      <section className="learning-invitations" aria-label="Discover by doing"><Link to="/missions"><span className="eyebrow">FOLLOW A QUESTION</span><strong>Guided discovery missions</strong><span>Five short investigations ↗</span></Link><Link to="/experiments"><span className="eyebrow">CHANGE ONE THING</span><strong>The science lab</strong><span>Redshift, dust, and spectra ↗</span></Link></section>
-      <section className="home-learn"><div><div className="eyebrow">BEFORE YOU LOOK UP</div><h2>What does infrared reveal?</h2><p>What is infrared light? What does a spectrum tell us? Take a hands-on introduction.</p></div><Link className="btn-secondary" to="/learn">Meet the invisible universe <ArrowUpRight size={16} /></Link></section>
-      <section className="mission-note" data-reveal><span className="mission-mark">OPEN<br />EXPLORATION</span><p>An independent educational project inspired by NASA’s SPHEREx mission. Real SPHEREx DR1 spectral images are available in the SPHEREx viewer; the legacy explorer uses unWISE or labeled simulations. Neither viewer establishes planet detections.</p><Link to="/architecture">About the data <ArrowUpRight size={15} /></Link></section>
+      <section className="learning-invitations" aria-label="Discover by doing"><Link to="/missions/changing-sky"><span className="eyebrow">FOLLOW A QUESTION</span><strong>A Changing Sky</strong><span>Start with two real exposures ↗</span></Link><Link to="/library"><span className="eyebrow">KEEP THE EVIDENCE</span><strong>Your observation journal</strong><span>Review your findings and inputs ↗</span></Link></section>
+      <section className="home-learn"><div><div className="eyebrow">BEFORE YOU COMPARE</div><h2>What does infrared reveal?</h2><p>Read a real image. Check dates and wavelengths. Learn what a difference can—and cannot—tell you.</p></div><Link className="btn-secondary" to="/learn">Meet the invisible universe <ArrowUpRight size={16} /></Link></section>
+      <section className="mission-note" data-reveal><span className="mission-mark">OPEN<br />EXPLORATION</span><p>An independent educational project inspired by NASA’s SPHEREx mission. Explore real SPHEREx images and measured channels, with unWISE available as a separate context view. Apparent differences require further checks; the app does not establish planet detections.</p><Link to="/architecture">About the data <ArrowUpRight size={15} /></Link></section>
     </div>
   );
 }

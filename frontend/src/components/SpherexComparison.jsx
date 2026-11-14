@@ -18,7 +18,31 @@ export default function SpherexComparison({ first, second, firstRecord, secondRe
     const low = values[Math.floor(values.length * .02)] ?? 0, high = values[Math.floor(values.length * .98)] ?? 1;
     const draw = (image, offset) => {
       const pixels = context.createImageData(image.width, image.height);
-      image.pixels.flat().forEach((value, i) => { const gray = value === null ? null : Math.round(255 * Math.asinh(10 * Math.max(0, Math.min(1, (value - low) / (high - low || 1)))) / Math.asinh(10)); pixels.data.set(gray === null ? [27, 35, 49, 255] : [gray, gray, gray, 255], i * 4); });
+      const w = image.width, h = image.height;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          let val = image.pixels[y]?.[x];
+          if (val === null || !Number.isFinite(val)) {
+            let nSum = 0, nCount = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (dy === 0 && dx === 0) continue;
+                const nv = image.pixels[y + dy]?.[x + dx];
+                if (nv !== null && nv !== undefined && Number.isFinite(nv)) {
+                  nSum += nv;
+                  nCount++;
+                }
+              }
+            }
+            if (nCount >= 3) {
+              val = nSum / nCount;
+            }
+          }
+          const gray = (val === null || !Number.isFinite(val)) ? null : Math.round(255 * Math.asinh(10 * Math.max(0, Math.min(1, (val - low) / (high - low || 1)))) / Math.asinh(10));
+          const idx = (y * w + x) * 4;
+          pixels.data.set(gray === null ? [27, 35, 49, 255] : [gray, gray, gray, 255], idx);
+        }
+      }
       context.putImageData(pixels, offset, 0);
     };
     draw(phase && second && mode === 'blink' ? second : first, 0);

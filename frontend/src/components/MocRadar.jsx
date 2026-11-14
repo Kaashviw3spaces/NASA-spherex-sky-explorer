@@ -7,7 +7,7 @@ const stars = Array.from({ length: 740 }, (_, i) => {
   const random = n => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
   return { ra: random(i+1)*360, dec: Math.asin(2*random(i+2000)-1)*180/Math.PI, size: .35+random(i+4000)*1.05, alpha: .25+random(i+6000)*.7 };
 });
-const W = 480, H = 380, R = 152, CX = W/2, CY = 178;
+const W = 480, H = 280, R = 112, CX = W/2, CY = 130;
 
 export default function MocRadar({ currentRa, currentDec, ra, dec, onSelectCoordinate, onSelectTarget, targetName }) {
   const targetRa = currentRa ?? ra ?? 0, targetDec = currentDec ?? dec ?? 0;

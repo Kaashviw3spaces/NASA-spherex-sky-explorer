@@ -62,8 +62,31 @@ self.onmessage = (e) => {
   const { zmin, zmax } = e.data.levels || computeCutLevels(buffer, totalPixels);
 
   for (let i = 0; i < totalPixels; i++) {
-    if (!Number.isFinite(buffer[i])) { rgba.set([27, 35, 49, 255], i * 4); continue; }
-    const s = applyStretch(buffer[i], zmin, zmax, stretch, gain);
+    let val = buffer[i];
+    if (!Number.isFinite(val)) {
+      const y = (i / width) | 0;
+      const x = i % width;
+      let sum = 0, count = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= height) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          if (nx < 0 || nx >= width) continue;
+          const neighbor = buffer[ny * width + nx];
+          if (Number.isFinite(neighbor)) {
+            sum += neighbor;
+            count++;
+          }
+        }
+      }
+      if (count >= 3) {
+        val = sum / count;
+      }
+    }
+    if (!Number.isFinite(val)) { rgba.set([27, 35, 49, 255], i * 4); continue; }
+    const s = applyStretch(val, zmin, zmax, stretch, gain);
     const lutIdx = ((s * maxLutIndex + 0.5) | 0) * 3;
     const p = i << 2;
     rgba[p] = lut[lutIdx];

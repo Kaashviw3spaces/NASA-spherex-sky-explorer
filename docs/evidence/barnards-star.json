@@ -1,0 +1,43 @@
+{
+  "ra": 269.4521,
+  "dec": 4.6934,
+  "fov_arcmin": 5,
+  "inputs": [
+    {
+      "url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2025W33_2C/l2b-v27-2026-228/3/level2_2025W33_2C_0321_1D3_spx_l2b-v27-2026-228.fits",
+      "id": "2025W33_2C_0321_1",
+      "mjd": 60902.864715,
+      "date": "2025-08-15T20:45:11.376",
+      "endDate": "2025-08-15T20:47:06.461",
+      "minUm": 1.6301,
+      "maxUm": 2.4346,
+      "unit": "MJy / sr",
+      "quality_applied": true,
+      "valid_pixels": 14890,
+      "total_pixels": 16384,
+      "image_sha256": "a65e4d27b2a691fb6d30dd7b4f743b14edc8f6c0555324efbae3a8ea06217bf5",
+      "processing": "128 \u00d7 128 common north-up TAN grid; bilinear interpolation, not integrated-flux conserving. Shared display stretch for comparisons. Statistical uncertainties are not propagated through resampling. Quality flags and invalid variances masked."
+    },
+    {
+      "url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/2026W19_1A/l2b-v27-2026-245/3/level2_2026W19_1A_0403_1D3_spx_l2b-v27-2026-245.fits",
+      "id": "2026W19_1A_0403_1",
+      "mjd": 61165.082972,
+      "date": "2026-05-05T01:59:28.781",
+      "endDate": "2026-05-05T02:01:23.866",
+      "minUm": 1.6301,
+      "maxUm": 2.4346,
+      "unit": "MJy / sr",
+      "quality_applied": true,
+      "valid_pixels": 14790,
+      "total_pixels": 16384,
+      "image_sha256": "12cf8be98ccb0959f8806a0a0eef1d72be27277c5b3086f9d68a55c6b44c128f",
+      "processing": "128 \u00d7 128 common north-up TAN grid; bilinear interpolation, not integrated-flux conserving. Shared display stretch for comparisons. Statistical uncertainties are not propagated through resampling. Quality flags and invalid variances masked."
+    }
+  ],
+  "conclusion": "No motion established. Different wavelength responses, PSFs, backgrounds and processing can explain differences.",
+  "two_usable_exposures": true,
+  "shared_valid_pixels": 13680,
+  "bandpass_compatible_fraction": 0.27419590643274855,
+  "subtraction_gate_passes": false,
+  "median_wavelength_difference_um": 0.011805065900814204
+}

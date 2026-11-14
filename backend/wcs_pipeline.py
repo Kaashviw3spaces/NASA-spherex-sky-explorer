@@ -132,25 +132,35 @@ def psf_matched_diff(
     """
     a = img_a.astype(np.float64)
     b = img_b.astype(np.float64)
+    valid = np.isfinite(a) & np.isfinite(b)
+    if valid.sum() < 16:
+        raise ValueError('Insufficient valid pixels for PSF fitting.')
+    a = np.where(valid, a, 0)
+    b = np.where(valid, b, 0)
+    def blur(sigma):
+        weight = gaussian_filter(valid.astype(float), sigma=sigma)
+        return gaussian_filter(a, sigma=sigma) / np.maximum(weight, 1e-12)
 
     if kernel == "gaussian":
-        a_conv = gaussian_filter(a, sigma=1.1)
-        alpha = float(np.sum(a_conv * b) / (np.sum(a_conv * a_conv) + 1e-9))
+        a_conv = blur(1.1)
+        alpha = float(np.sum(a_conv[valid] * b[valid]) / (np.sum(a_conv[valid] ** 2) + 1e-9))
         diff = b - alpha * a_conv
+        diff[~valid] = np.nan
         return diff.astype(np.float32), 0.86
 
     b0 = a
-    b1 = gaussian_filter(a, sigma=1.0)
-    b2 = gaussian_filter(a, sigma=2.2)
+    b1 = blur(1.0)
+    b2 = blur(2.2)
     ones = np.ones_like(a)
 
     design = np.column_stack([b0.ravel(), b1.ravel(), b2.ravel(), ones.ravel()])
     target = b.ravel()
-    coeffs, _, _, _ = np.linalg.lstsq(design, target, rcond=None)
+    coeffs, _, _, _ = np.linalg.lstsq(design[valid.ravel()], target[valid.ravel()], rcond=None)
     model = (design @ coeffs).reshape(a.shape)
     diff = b - model
 
-    naive_std = float(np.std(b - a)) + 1e-9
-    matched_std = float(np.std(diff))
+    naive_std = float(np.std((b - a)[valid])) + 1e-9
+    matched_std = float(np.std(diff[valid]))
+    diff[~valid] = np.nan
     confidence = float(np.clip(1.0 - (matched_std / (naive_std * 1.15)), 0.55, 0.99))
     return diff.astype(np.float32), confidence

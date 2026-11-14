@@ -10,7 +10,8 @@ export default function SpectrumChart({
   showLines,
   measured = false,
   markers = MOLECULAR_MARKERS,
-  hoverSelect = false
+  hoverSelect = false,
+  referenceBands = []
 }) {
   const svgRef = useRef(null);
   const W = 520;
@@ -40,6 +41,8 @@ export default function SpectrumChart({
   const linePath = safeBands
     .map((b, i) => `${i === 0 ? 'M' : 'L'} ${xOf(b.wavelength).toFixed(1)} ${yOf(b.flux).toFixed(1)}`)
     .join(' ');
+  const referenceMax = Math.max(1e-12, ...referenceBands.map(b => b.flux));
+  const referencePath = referenceBands.map((b,i) => `${i ? 'L' : 'M'} ${xOf(b.wavelength)} ${pad.top+plotH-(b.flux/referenceMax)*plotH}`).join(' ');
 
   const handlePointer = (e) => {
     if (!svgRef.current) return;
@@ -191,11 +194,13 @@ export default function SpectrumChart({
             );
           })}
 
+        {measured && referencePath && <path data-reference-continuum d={referencePath} fill="none" stroke="#b9a6cf" strokeWidth="1.5" strokeDasharray="5 5" opacity=".8"><title>Illustrative continuum, independently normalized from zero to one. Not fitted to measurements.</title></path>}
         {/* Spectrum trace or WISE broad-band fallback */}
         {measured ? safeBands.map((b, index) => <g key={index}>
-          <line x1={xOf(b.wavelength)} x2={xOf(b.wavelength)} y1={yOf(b.flux - (b.err || 0))} y2={yOf(b.flux + (b.err || 0))} stroke="#98cbd7" />
+          <line data-measurement-error x1={xOf(b.wavelength)} x2={xOf(b.wavelength)} y1={yOf(b.flux - (b.err || 0))} y2={yOf(b.flux + (b.err || 0))} stroke="#98cbd7" strokeWidth="1.5" />
+          {[-1,1].map(sign => <line key={sign} x1={xOf(b.wavelength)-3} x2={xOf(b.wavelength)+3} y1={yOf(b.flux+sign*(b.err||0))} y2={yOf(b.flux+sign*(b.err||0))} stroke="#98cbd7" />)}
           <line x1={xOf(Math.max(minW, b.wavelength - (b.bandwidth || 0) / 2))} x2={xOf(Math.min(maxW, b.wavelength + (b.bandwidth || 0) / 2))} y1={yOf(b.flux)} y2={yOf(b.flux)} stroke="#98cbd7" />
-          <circle cx={xOf(b.wavelength)} cy={yOf(b.flux)} r="3" fill="#98cbd7" />
+          <circle data-measured-channel cx={xOf(b.wavelength)} cy={yOf(b.flux)} r="4" fill="#98cbd7"><title>{`${b.wavelength.toFixed(4)} µm: ${b.flux.toPrecision(4)} ± ${(b.err||0).toPrecision(3)} MJy/sr`}</title></circle>
         </g>) : inSpherexFootprint ? (
           <path d={linePath} fill="none" stroke="#f0f2f5" strokeWidth="1.6" />
         ) : (
@@ -233,15 +238,18 @@ export default function SpectrumChart({
         )}
 
         {measured && <text x={pad.left} y="12" fill="#98cbd7" fontSize="10">Surface brightness (MJy/sr) · ±1σ</text>}
+        {measured && referencePath && <g fill="#b9a6cf" fontSize="9" fontFamily="monospace"><text x={W-5} y={pad.top+8} textAnchor="end">1</text><text x={W-5} y={H-pad.bottom} textAnchor="end">0</text><title>Right scale: reference continuum normalized to peak one</title></g>}
         {/* Active wavelength scrubber */}
         <line
+          data-wavelength-cursor
           x1={xOf(activeWavelength)}
           y1={pad.top}
           x2={xOf(activeWavelength)}
           y2={H - pad.bottom}
           stroke="#d9b580"
-          strokeWidth="1.2"
+          strokeWidth="2"
         />
+        <path data-wavelength-wedge d={`M ${xOf(activeWavelength)-5} ${pad.top} L ${xOf(activeWavelength)+5} ${pad.top} L ${xOf(activeWavelength)} ${pad.top+7} Z`} fill="#d9b580" />
         {inSpherexFootprint && activePoint && (
           <circle
             cx={xOf(activePoint.wavelength)}

@@ -1,9 +1,10 @@
 import { NavLink } from 'react-router-dom';
 
 const destinations = [
+  ['/explorer', 'Compare the sky'],
   ['/learn', 'Field guide'],
   ['/missions', 'Missions'],
-  ['/experiments', 'Experiments'],
+  ['/experiments', 'Optional labs'],
   ['/library', 'Journal']
 ];
 

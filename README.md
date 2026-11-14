@@ -37,17 +37,16 @@ This is an independent educational project inspired by NASA’s SPHEREx mission.
 | Experience | Route | What it provides |
 | --- | --- | --- |
 | Home | `/` | Scroll-scrubbed mission introduction, target search, and discovery links |
-| Explore | `/explorer` | Switch between SPHEREx and unWISE at the same coordinates; compare dated inputs and save conclusions; interactive teaching spectrum |
-| Field guide | `/learn` | Progressive explanations, a traveling-wave lab, simulated spectrum, image-processing loupe, and glossary |
-| Missions | `/missions` | Five guided investigations with objectives, checks, reflections, and local progress |
+| Explore | `/explorer` | Switch between SPHEREx and unWISE at the same coordinates; compare dated inputs, inspect measured SPHEREx channels, and save conclusions |
+| Field guide | `/learn` | Real SPHEREx image examples, comparison illustrations, progressive explanations, optional wave/spectrum labs, and glossary |
+| Missions | `/missions` | A Changing Sky first, with four optional astronomy investigations, checks, reflections, and local progress |
 | Experiments | `/experiments` | Interactive redshift, dust transmission, and spectrum models |
 | Journal | `/library` | Saved skies, notes, reflections, mission history, and local backup tools |
 | Scene Studio | `/scene` | Canvas-first image playback, comparison, recording, fullscreen viewing, and saved settings |
 | Targets | `/targets` | Searchable coordinate presets with educational context |
 | Architecture | `/architecture` | Technical and data-source explanations |
-| Legacy explorer | `/legacy-explorer` | Original context-image and teaching-spectrum tools |
 
-Old `/spherex` links redirect to `/explorer`, retaining their query parameters. The separate observations page has been retired.
+Old `/spherex` and `/legacy-explorer` links redirect to `/explorer`, retaining their query parameters. Both surveys are available in the unified Explore page.
 
 <a id="understand-the-data-first"></a>
 
@@ -62,7 +61,7 @@ The app combines several **distinct** data paths. Observations, illustrations, a
 | Fallback image frames | Explicit `Synthetic-Demo` generation after archive retrieval fails | Simulated, arbitrary signal; no telescope observation date |
 | SPHEREx dates and metadata | NASA/IPAC IRSA SIA2 discovery of DR1 spectral images at the requested coordinates | Separate observations, not the context image’s capture dates |
 | SPHEREx preview API | Real IRSA FITS cutouts on a common 128×128 TAN sky grid | Bilinear interpolation is not integrated-flux conserving; previews are enlarged for display. |
-| Main Explore spectrum | Shared teaching-spectrum pipeline and `SpectrumChart.jsx` | Simulated, arbitrary units; responds to cursor position and aperture controls, not measured chemistry |
+| Main Explore spectrum | Measured SPHEREx native-pixel channels with ±1σ error bars | Streams accepted samples as they arrive; incomplete coverage and background glow remain. No chemical fit or teaching curve. |
 | Optional spectral-sample API | `/api/spherex/spectral-samples` | Real but partial native-pixel SPHEREx samples with ±1σ errors; available through the API, not the main graph |
 | Legacy explorer and learning spectra | Explicitly labeled generated teaching curves | Simulations, not telescope measurements |
 | Catalog queries | IRSA TAP; default table `allwise_p3as_psd` | Failed queries return unavailable results, not invented sources. |
@@ -79,11 +78,11 @@ References: [SPHEREx at NASA](https://science.nasa.gov/mission/spherex/), [IRSA 
 
 ## 🚀 Submission walkthrough
 
-1. Open **Explore** and select a target or enter coordinates. Check the visible context-image source label.
-2. Use **Blink**, **Swipe**, or **Side-by-Side** to inspect the available context releases. These are not a SPHEREx time series, and missing dates remain unavailable.
-3. Read the separate **SPHEREx observation** selector for actual archive exposure dates at the requested coordinates.
-4. Explore the **simulated spectrum**: move over the context image, adjust the aperture and scrub wavelengths. Toggle reference markers and export the teaching values as CSV or JSON. These are not telescope measurements or chemical detections.
-5. Complete a mission, use a learning experiment, and save a reflection in the journal. Journal data stays in this browser; export a backup before changing devices.
+1. Open **Explore → Try a real investigation**, or start **Missions → A Changing Sky**. The documented comparison pins the exact March 19 and May 4, 2026 SPHEREx exposures.
+2. Read the dates and wavelength information for **Image A** and **Image B**. Use **Side-by-Side**, **Swipe**, or **Blink**; subtraction is available only when compatibility checks pass.
+3. Read **Did the field fade?** The field-median difference is largely consistent with the supplied zodiacal foreground model. No source variability or motion is established; see the downloadable evidence for methods and limits.
+4. Optionally open **Inspect infrared channels** for real native-pixel SPHEREx samples and statistical error bars. Missing channels remain gaps; reference markers are not chemical detections. Learn and Experiments retain separately labelled teaching models.
+5. Record what you noticed and an alternative explanation, then **Save** the comparison to the journal. The documented pair can be reopened from its saved inputs. Export a journal backup before changing devices.
 
 **Scope for judges:** this educational prototype compares actual SPHEREx exposures as well as separate unWISE context images. A real field investigation is documented, with remaining scientific validation, beginner-study and public-version checks explicitly listed. It does not identify Planet X or infer chemical abundances.
 

@@ -10,7 +10,7 @@ from astropy.wcs import WCS
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from cache import BoundedLRUCache, JobStore
@@ -339,8 +339,13 @@ async def compute_diff(req: DiffRequest):
     w, h = w_a, h_a
     img_a = dequantize_uint16(bytes_a, (h, w), float(hdr_a["X-BSCALE"]), float(hdr_a["X-BZERO"]))
     img_b = dequantize_uint16(bytes_b, (h, w), float(hdr_b["X-BSCALE"]), float(hdr_b["X-BZERO"]))
-    img_a = np.nan_to_num(img_a, nan=0.0)
-    img_b = np.nan_to_num(img_b, nan=0.0)
+    if hdr_a.get('X-SPHEREx-Detector') is not None:
+        from scipy.ndimage import map_coordinates
+        yy, xx = np.mgrid[:h, :w]
+        coords = [yy * (pa.shape[0]-1)/(h-1), xx * (pa.shape[1]-1)/(w-1)]
+        common = map_coordinates(overlap.astype(float), coords, order=1) > .999
+        img_a[~common] = np.nan
+        img_b[~common] = np.nan
 
     diff_img, confidence = await asyncio.to_thread(psf_matched_diff, img_a, img_b, req.kernel)
     diff_img = np.nan_to_num(diff_img, nan=0.0)
@@ -447,7 +452,8 @@ async def real_spherex_cutout(url: str, ra: float = Query(..., ge=0, le=360), de
             coords = [yy * (image['height'] - 1) / 511, xx * (image['width'] - 1) / 511]
             support = map_coordinates(np.isfinite(native).astype(float), coords, order=1)
             display = map_coordinates(np.nan_to_num(native), coords, order=1)
-            display[support < .999] = np.nan
+            valid_support = support > 0.05
+            display = np.where(valid_support, display / np.maximum(support, 1e-6), np.nan)
             raw, scale, zero = quantize_to_uint16(display)
             headers = build_wcs_headers(width=512, height=512, bscale=scale, bzero=zero, ra=ra, dec=dec,
                 pixel_scale_arcsec=fov * 60 / 512, epoch='unknown', provenance='SPHEREx-DR1-preview',
@@ -463,8 +469,18 @@ async def real_spherex_cutout(url: str, ra: float = Query(..., ge=0, le=360), de
         raise HTTPException(status_code=502, detail='SPHEREx cutout unavailable; no simulated replacement was generated.') from exc
 
 @app.get('/api/spherex/spectral-samples')
-async def real_spectral_samples(ra: float = Query(..., ge=0, le=360), dec: float = Query(..., ge=-90, le=90)):
+async def real_spectral_samples(ra: float = Query(..., ge=0, le=360), dec: float = Query(..., ge=-90, le=90), stream: bool = False):
     from spherex_archive import spectral_samples
+    if stream:
+        import json
+        from spherex_archive import spectral_sample_updates
+        async def events():
+            try:
+                async for update in spectral_sample_updates(ra, dec):
+                    yield 'data: ' + json.dumps(update, allow_nan=False) + '\n\n'
+            except Exception:
+                yield 'data: ' + json.dumps({'error': 'Measured spectral samples could not be retrieved from IRSA. Please retry.'}) + '\n\n'
+        return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
     try:
         return await spectral_samples(ra, dec)
     except Exception as exc:

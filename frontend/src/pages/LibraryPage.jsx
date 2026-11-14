@@ -1,6 +1,7 @@
 import EditorialCover from '../components/learning/EditorialCover';
 import JournalLearning from '../components/learning/JournalLearning';
 import SceneNotes from '../components/learning/SceneNotes';
+import { savedExplorerLink } from '../utils/savedExplorerLink';
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -285,7 +286,7 @@ export default function LibraryPage() {
                     <button
                       onClick={() =>
                         navigate(
-                          `/explorer?ra=${item.ra}&dec=${item.dec}&fov=${item.fovArcmin}&mode=${item.mode}&stretch=${item.stretch}`
+                          savedExplorerLink(item)
                         )
                       }
                       className="btn btn-secondary"

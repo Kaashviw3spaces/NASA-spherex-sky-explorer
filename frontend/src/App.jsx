@@ -68,7 +68,7 @@ export default function App() {
               <Route path="/" element={<HomePage />} />
               <Route path="/spherex" element={<RetiredObservationsRoute />} />
               <Route path="/explorer" element={<ExplorerPage spherex />} />
-              <Route path="/legacy-explorer" element={<ExplorerPage />} />
+              <Route path="/legacy-explorer" element={<RetiredObservationsRoute />} />
               <Route path="/library" element={<LibraryPage />} />
               <Route path="/scene" element={<ScenePage />} />
               <Route path="/missions" element={<MissionsPage />} />

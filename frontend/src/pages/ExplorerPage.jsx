@@ -1,8 +1,9 @@
 import { gridToSky } from '../utils/skyCoordinates';
+import { wavelengthAtPixel } from '../utils/imageWavelength';
 import useSpherexFrames from '../hooks/useSpherexFrames';
 import { observationDate } from '../utils/observationDate';
 import { computeCutLevels } from '../utils/displayLevels';
-import { comparisonIssue, displayedFrames, observationSnapshot } from '../utils/observationContext';
+import { comparisonIssue, comparisonPair, displayedFrames, observationSnapshot } from '../utils/observationContext';
 import { saveLibraryItem } from '../utils/libraryStorage';
 import WhatAmISeeing from '../components/learning/WhatAmISeeing';
 import { targetFromParams } from '../data/pointing';
@@ -40,13 +41,18 @@ import {
   generateStarfieldBuffer
 } from '../utils/astronomyRenderer';
 import SpectrumChart from '../components/SpectrumChart';
+import MeasuredSpectrum from '../components/MeasuredSpectrum';
 import MocRadar from '../components/MocRadar';
 import PresetPreloader from '../components/PresetPreloader';
 import FitsHeaderModal from '../components/FitsHeaderModal';
+import ExposureStrip from '../components/ExposureStrip';
+import { INVESTIGATION_LINK, investigationAtPointing } from '../data/investigation';
+import investigationEvidenceUrl from '../data/investigation.json?url';
 
 export default function ExplorerPage({ spherex = false }) {
   const [params] = useSearchParams();
-  const [mapOpen, setMapOpen] = useState(!spherex);
+  const [mapOpen, setMapOpen] = useState(true);
+  const [foregroundReady, setForegroundReady] = useState(false);
   const mapPosition = useRef(null);
   const keepMapPosition = () => {
     mapPosition.current = document.getElementById('explore-sky-map')?.getBoundingClientRect().top;
@@ -63,11 +69,11 @@ export default function ExplorerPage({ spherex = false }) {
   try { pointing = targetFromParams(params); } catch (error) {
     return <div className="page-container"><p role="alert">{error.message}</p><Link to="/explorer">Open the default sky view</Link></div>;
   }
-  const key = JSON.stringify([pointing.ra, pointing.dec, pointing.fovArcmin, pointing.name]);
-  return <><ExplorerSession key={key} spherex={spherex} mapOpen={mapOpen} onMapOpenChange={setMapOpen} onMapSelect={keepMapPosition} /><PresetPreloader /></>;
+  const key = JSON.stringify([pointing.ra, pointing.dec, pointing.fovArcmin, pointing.name, params.get('investigation')]);
+  return <><ExplorerSession key={key} spherex={spherex} mapOpen={mapOpen} onMapOpenChange={setMapOpen} onMapSelect={keepMapPosition} onImagesReady={setForegroundReady} /><PresetPreloader enabled={foregroundReady} /></>;
 }
 
-function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
+function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect, onImagesReady }) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const initialTarget = useMemo(() => targetFromParams(searchParams), []);
@@ -82,7 +88,7 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
   const [initialQuery] = useState(() => searchParams.get('q') || '');
   const [queryInput, setQueryInput] = useState(initialQuery || initialTarget.name);
   const [viewMode, setViewMode] = useState(searchParams.get('mode') || 'static');
-  const [stretch, setStretch] = useState(searchParams.get('stretch') || 'zscale');
+  const [stretch, setStretch] = useState(searchParams.get('stretch') || (searchParams.has('investigation') ? 'asinh' : 'zscale'));
   const [colormap, setColormap] = useState(searchParams.get('colormap') || 'grayscale');
   const [gain, setGain] = useState(1.0);
   const [diffMode, setDiffMode] = useState(searchParams.get('diff') === 'true' || searchParams.get('mode') === 'diff');
@@ -92,19 +98,28 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
   const [fps, setFps] = useState(3);
   const [epochIdx, setEpochIdx] = useState(Math.max(0, parseInt(searchParams.get('epoch') || '0', 10) || 0));
   const [curtainPos, setCurtainPos] = useState(Math.min(1, Math.max(0, Number(searchParams.get('curtain') ?? 0.5) || 0)));
-  const [imageSource, setImageSource] = useState(spherex && searchParams.get('source') === 'spherex' ? 'spherex' : 'unwise');
+  const [imageSource, setImageSource] = useState(spherex && searchParams.get('source') !== 'unwise' ? 'spherex' : 'unwise');
   const isSpherexImage = spherex && imageSource === 'spherex';
-  const context = useCutoutFrames(target);
-  const science = (spherex ? useSpherexFrames : useCutoutFrames)(target, { metadataOnly: !isSpherexImage });
+  const investigation = investigationAtPointing(searchParams.get('investigation'), target);
+  const [channelsLoading, setChannelsLoading] = useState(false);
+  const [spectrumOpen, setSpectrumOpen] = useState(searchParams.get('panel') === 'spectrum');
+  const [channelPosition, setChannelPosition] = useState({ra: initialTarget.ra, dec: initialTarget.dec});
+  const context = useCutoutFrames(target, {enabled: !isSpherexImage});
+  const science = (spherex ? useSpherexFrames : useCutoutFrames)(target, { metadataOnly: !isSpherexImage, investigation });
   const selectedImages = isSpherexImage ? science : context;
   const { frames: liveFrames, status: imageStatus, error: imageError, retry } = selectedImages;
   const requestKey = imageSource + ':' + selectedImages.requestKey;
+  useEffect(() => { onImagesReady(imageStatus === 'ready' && !(isSpherexImage && channelsLoading)); return () => onImagesReady(false); }, [imageStatus, isSpherexImage, channelsLoading, onImagesReady]);
+  const [pairSelection, setPairSelection] = useState({});
+  const pairFrames = useMemo(() => comparisonPair(liveFrames, pairSelection.a, pairSelection.b), [liveFrames, pairSelection]);
+  const comparing = diffMode || ['side-by-side', 'swipe'].includes(viewMode);
+  const visibleFrames = comparing ? pairFrames : liveFrames;
   useEffect(() => {
     if (spherex && liveFrames.length < 2 && imageStatus !== 'loading') { setViewMode('static'); setIsPlaying(false); }
   }, [spherex, liveFrames.length, imageStatus]);
   const [psfState, setPsfDiffResult] = useState(null);
-  const pairKey = JSON.stringify([liveFrames[0]?.cache_key, liveFrames.at(-1)?.cache_key]);
-  const subtractionIssue = comparisonIssue(liveFrames);
+  const pairKey = JSON.stringify(pairFrames.map(frame => frame.cache_key));
+  const subtractionIssue = comparisonIssue(pairFrames);
   const psfDiffResult = psfState?.requestKey === requestKey && psfState?.pairKey === pairKey ? psfState : null;
   const [psfLoading, setPsfLoading] = useState(false);
   const [diffError, setDiffError] = useState('');
@@ -344,6 +359,8 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
         ...(!spherex ? { epochA: target.epochs[0], epochB: target.epochs[target.epochs.length - 1] } : {}),
         mode: viewMode,
         ...(spherex ? { source: imageSource } : {}),
+        ...(investigation ? { investigation: investigation.id } : {}),
+        ...(spectrumOpen ? { panel: 'spectrum' } : {}),
         stretch,
         colormap,
         diff: diffMode ? 'true' : 'false',
@@ -354,12 +371,13 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
       },
       { replace: true }
     );
-  }, [target, viewMode, stretch, colormap, diffMode, epochIdx, curtainPos, imageSource, setSearchParams]);
+  }, [target, viewMode, stretch, colormap, diffMode, epochIdx, curtainPos, imageSource, investigation, spectrumOpen, setSearchParams]);
 
   const hoverTime = useRef(0);
   // Shared teaching-spectrum path for Explore and the legacy viewer; values are simulated.
   useEffect(() => {
     const controller = new AbortController();
+    if (spherex) return () => controller.abort();
     fetchSpectrumApi(
       sampleCoords.ra,
       sampleCoords.dec,
@@ -380,7 +398,7 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
         }
       });
     return () => controller.abort();
-  }, [target, sampleCoords, apertureRadius]);
+  }, [spherex, target, sampleCoords, apertureRadius]);
 
   const fallbackSpectrum = useMemo(
     () => generateSpectrum(target, apertureRadius, sampleOffset),
@@ -410,6 +428,14 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
   }, [target]);
 
   const frameCount = liveFrames.length > 0 ? liveFrames.length : fallbackEpochs.length;
+  const imageLevels = useMemo(() => {
+    if (!liveFrames.length) return undefined;
+    const inputs = comparing || viewMode === 'blink' ? pairFrames : [liveFrames[epochIdx % liveFrames.length]];
+    const joined = new Float32Array(inputs.reduce((n, frame) => n + frame.buffer.length, 0));
+    let offset = 0;
+    for (const frame of inputs) { joined.set(frame.buffer, offset); offset += frame.buffer.length; }
+    return computeCutLevels(joined);
+  }, [liveFrames, pairFrames, comparing, viewMode, epochIdx]);
 
   // Phase-locked blink timer
   useEffect(() => {
@@ -423,30 +449,31 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
   // Dispatch active raster (modulated in real time by activeWavelength & sedRatio) to Web Worker
   useEffect(() => {
     if (!workerRef.current) return;
+    if (comparing && pairFrames.length < 2) return;
 
     const useLive = liveFrames.length > 0;
     const size = 512;
     const lastIdx = (useLive ? liveFrames.length : fallbackEpochs.length) - 1;
     const safeIdx = epochIdx % Math.max(1, useLive ? liveFrames.length : fallbackEpochs.length);
 
-    const rawA = useLive ? liveFrames[0].buffer : fallbackEpochs[0];
-    const rawB = useLive ? liveFrames[lastIdx].buffer : fallbackEpochs[lastIdx];
+    const rawA = useLive ? (pairFrames[0] || liveFrames[0]).buffer : fallbackEpochs[0];
+    const rawB = useLive ? (pairFrames[1] || liveFrames[0]).buffer : fallbackEpochs[lastIdx];
     const rawCur = useLive ? liveFrames[safeIdx].buffer : fallbackEpochs[safeIdx];
 
     const bufA = useLive ? rawA : applyBandpassModulation(rawA, size, target, 0, activeWavelength, sedRatio);
     const bufB = useLive ? rawB : applyBandpassModulation(rawB, size, target, lastIdx, activeWavelength, sedRatio);
     const curBuf = useLive ? rawCur : applyBandpassModulation(rawCur, size, target, safeIdx, activeWavelength, sedRatio);
 
-    const levels = spherex && liveFrames.length ? computeCutLevels(Float32Array.from(liveFrames.flatMap(frame => Array.from(frame.buffer)))) : undefined;
-    const dispatch = (id, buf) => {
+    const levels = imageLevels;
+    const dispatch = (id, buf, label) => {
       const copy = new Float32Array(buf);
       const version = (renderVersions.current[id] || 0) + 1;
       renderVersions.current[id] = version;
       workerRef.current.postMessage(
         { id, version, requestKey, levels: diffMode ? computeCutLevels(buf) : levels, buffer: copy, width: size, height: size, stretch, colormap, gain,
-          label: liveFrames.length && liveFrames.every(f => f.meta?.dataKind === 'observed')
+          label: label || (liveFrames.length && liveFrames.every(f => f.meta?.dataKind === 'observed')
             ? spherex ? `${isSpherexImage ? "SPHEREx DR1" : "unWISE context"} · ${observationDate(liveFrames[safeIdx]?.meta.epoch)}` : `Observed unWISE · ${liveFrames.map(f => observationDate(f.meta.epoch)).join(" / ")}`
-            : spherex ? (liveFrames.length ? 'SIMULATED DEMO / mixed context sources — see source details' : (isSpherexImage ? 'SPHEREx · loading observation' : 'Context archive · loading image')) : 'SIMULATED DEMO / mixed sources — see source details' },
+            : spherex ? (liveFrames.length ? 'SIMULATED DEMO / mixed context sources — see source details' : (isSpherexImage ? 'SPHEREx · loading observation' : 'Context archive · loading image')) : 'SIMULATED DEMO / mixed sources — see source details') },
         [copy.buffer]
       );
     };
@@ -472,13 +499,16 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
           combined[idx] = x < splitX ? bufA[idx] : bufB[idx];
         }
       }
-      dispatch('swipe', combined);
+      dispatch('swipe', combined, 'Image A ← | → Image B · see dates above');
     } else if (viewMode === 'side-by-side') {
-      dispatch('primary', bufA);
-      dispatch('secondary', bufB);
+      dispatch('primary', bufA, `Image A · ${observationDate(pairFrames[0]?.meta.epoch)} · ${pairFrames[0]?.meta.release || 'unavailable'}`);
+      dispatch('secondary', bufB, `Image B · ${observationDate(pairFrames[1]?.meta.epoch)} · ${pairFrames[1]?.meta.release || 'unavailable'}`);
     }
   }, [
     liveFrames,
+    pairFrames,
+    comparing,
+    imageLevels,
     fallbackEpochs,
     target,
     epochIdx,
@@ -545,10 +575,10 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
     setPsfLoading(true);
     setDiffError('');
     try {
-      const res = await fetchPsfDiffApi(liveFrames[0].cache_key, liveFrames.at(-1).cache_key, 'alard_lupton', controller.signal);
+      const res = await fetchPsfDiffApi(pairFrames[0].cache_key, pairFrames[1].cache_key, 'alard_lupton', controller.signal);
       if (!controller.signal.aborted) {
         for (let i = 0; i < res.buffer.length; i++) {
-          if (!Number.isFinite(liveFrames[0].buffer[i]) || !Number.isFinite(liveFrames.at(-1).buffer[i])) res.buffer[i] = NaN;
+          if (!Number.isFinite(pairFrames[0].buffer[i]) || !Number.isFinite(pairFrames[1].buffer[i])) res.buffer[i] = NaN;
         }
         setPsfDiffResult({ ...res, requestKey, pairKey });
         setDiffMode(true);
@@ -568,8 +598,11 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
     setCrosshair({ x, y });
     setSampleOffset((x - canvas.width / 2) * 0.02 + (y - canvas.height / 2) * 0.02);
 
-    const sky = gridToSky(x, y, target.ra, target.dec, target.fovArcmin || 5, canvas.width);
+    const imageFov = isSpherexImage ? Math.min(10,Math.max(1,target.fovArcmin || 5)) : target.fovArcmin || 5;
+    const sky = gridToSky(x, y, target.ra, target.dec, imageFov, canvas.width);
     setSampleCoords(sky);
+    const frame = comparing ? pairFrames[canvas === canvasSecondaryRef.current || (viewMode === 'swipe' && x >= curtainPos*512) ? 1 : 0] : liveFrames[epochIdx % Math.max(1,liveFrames.length)];
+    setChannelPosition({...sky, wavelength:wavelengthAtPixel(frame,x,y), delay:e.type === 'pointermove' ? 280 : 0});
   };
 
   const handleExportCsv = () => {
@@ -637,7 +670,7 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
       {diffError && <p className="inline-error" role="alert">{diffError}</p>}
       {/* Top Query & Provenance Toolbar */}
       <div className="explorer-toolbar">
-        <form className="search-group" onSubmit={handleSearch} role="search">
+        <form id="choose-field" className="search-group" onSubmit={handleSearch} role="search">
           <Search size={17} aria-hidden="true" />
           <input
             className="coord-input"
@@ -664,18 +697,18 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
           <button type="button" className="btn-compact" onClick={() => {
             const saved = saveLibraryItem({ name: target.name, ra: target.ra, dec: target.dec, fovArcmin: target.fovArcmin, mode: diffMode ? 'diff' : viewMode, stretch, colormap, activeWavelength,
               notes: finding || alternatives ? `What I noticed: ${finding}\nOther explanations: ${alternatives}\nConclusion: tentative; no confirmed motion or chemical detection.` : '',
-              observation: observationSnapshot(liveFrames, epochIdx, viewMode, diffMode)
+              observation: observationSnapshot(visibleFrames, epochIdx, viewMode, diffMode)
             });
             setBookmarkStatus(saved ? 'Saved to your journal with source metadata.' : 'Could not save. Check browser storage.');
           }}><Bookmark size={13} /> Save</button>
-          <Link to="/targets" className="btn-compact">
-            Targets
-          </Link>
+          <Link to="/targets" className="btn-compact">Targets</Link>
+          {spherex && !investigation && <Link to={INVESTIGATION_LINK} className="btn-compact">Try a real investigation ↗</Link>}
         </div>
       </div>
 
 
-      {spherex && <div className="console-observation-row">
+      {spherex && <nav className="explore-workflow" aria-label="Investigation steps"><a href="#choose-field">01 Choose field</a><a href="#choose-dates">02 Choose dates</a><a href="#compare-images">03 Compare</a><a href="#record-finding">04 Record finding</a></nav>}
+      {spherex && <div id="choose-dates" className="console-observation-row">
         <div className="segmented" role="group" aria-label="Image source">
           {['unwise', 'spherex'].map(source => <button type="button" key={source} aria-pressed={imageSource === source} className={imageSource === source ? 'active' : ''} onClick={() => {
             diffControllerRef.current?.abort(); setPsfLoading(false); setDiffMode(false); setIsPlaying(false); setViewMode('static'); setEpochIdx(0); setImageSource(source);
@@ -685,27 +718,28 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
           {liveFrames.length ? liveFrames.map((frame, index) => <option key={frame.cache_key || frame.meta.sourceUrl || index} value={index}>{isSpherexImage ? observationDate(frame.meta.epoch) : frame.meta.release || 'Demo'}{frame.meta.spectralRange ? ` · ${frame.meta.spectralRange}` : ''}</option>) : <option value={0}>{imageStatus === 'loading' ? 'Loading…' : 'No image available'}</option>}
         </select></label>
       </div>}
-      <DataNotice spherex={isSpherexImage} frames={liveFrames} activeIndex={epochIdx} mode={viewMode} difference={diffMode} target={target} colormap={colormap} stretch={stretch} status={imageStatus} error={imageError} onRetry={retry} />
-
-
+      {isSpherexImage && investigation && <a className="text-link" href="#field-explanation">Read the image explanation &amp; motion walkthrough ↓</a>}
+      {isSpherexImage && <ExposureStrip frames={liveFrames} levels={imageLevels} activeIndex={viewMode === 'static' && !diffMode ? epochIdx : -1} onSelect={index => { selectImageMode('static'); setEpochIdx(index); }} />}
+      <DataNotice spherex={isSpherexImage} spectrumKind={spherex ? (isSpherexImage ? 'measured' : 'unavailable') : 'simulated'} frames={visibleFrames} activeIndex={epochIdx} mode={viewMode} difference={diffMode} target={target} colormap={colormap} stretch={stretch} status={imageStatus} error={imageError} onRetry={retry} />
       <p className="bookmark-status" role="status">{bookmarkStatus}</p>
       {/* Main 2-Column Instrument Grid */}
       <div className="explorer-grid">
         {/* Left: 3-Mode Cutout Viewport */}
-        <section className="viewport-pane" aria-label="Observation viewer">
+        <section id="compare-images" className="viewport-pane" aria-label="Observation viewer">
           <div className="viewer-heading"><div><span className="eyebrow">01 / SKY VIEW</span><h2>{target.name}</h2></div><span className="field-coordinate">RA {target.ra.toFixed(4)}°<br />DEC {target.dec.toFixed(4)}°</span></div>
-          {liveFrames.length >= 2 && <div className="comparison-inputs" aria-label="Comparison inputs">
-            {[liveFrames[0], liveFrames.at(-1)].map((frame, index) => <div key={index}><strong>Image {index ? 'B' : 'A'}</strong><span>{observationDate(frame.meta.epoch)}</span><span>{frame.meta.spectralRange ? `${frame.meta.spectralRange} · detector range` : frame.meta.wavelengthUm ? `W${frame.meta.bandIndex} · ${frame.meta.wavelengthUm} µm` : 'Band unavailable'}</span><small>{frame.meta.release} · {frame.meta.dataKind}</small></div>)}
+          {comparing && pairFrames.length === 2 && <div className="comparison-inputs" aria-label="Comparison inputs">
+            {pairFrames.map((frame, index) => <div key={index}><label>Image {index ? 'B' : 'A'} <select aria-label={`Image ${index ? 'B' : 'A'} exposure`} value={frame.meta.sourceUrl || frame.cache_key} onChange={event => { diffControllerRef.current?.abort(); setPsfLoading(false); setPsfDiffResult(null); setPairSelection(value => ({...value, [index ? 'b' : 'a']: event.target.value})); }}>{liveFrames.map((option,i) => <option key={option.meta.sourceUrl || option.cache_key || i} value={option.meta.sourceUrl || option.cache_key} disabled={(option.meta.sourceUrl || option.cache_key) === (pairFrames[1-index].meta.sourceUrl || pairFrames[1-index].cache_key)}>{observationDate(option.meta.epoch)} · {option.meta.release}</option>)}</select></label><span>{frame.meta.spectralRange ? `${frame.meta.spectralRange} · detector range` : frame.meta.wavelengthUm ? `W${frame.meta.bandIndex} · ${frame.meta.wavelengthUm} µm` : 'Band unavailable'}</span><small>{frame.meta.dataKind}</small></div>)}
           </div>}
-          {diffMode && <p className="quiet-note" role="status">{psfDiffResult ? 'PSF-fit difference' : 'Normalized difference'} · first vs last image · not a confirmed detection.</p>}
+          {comparing && pairFrames.length < 2 && <p role="status">Waiting for two distinct exposures. No duplicate comparison is shown.</p>}
+          {diffMode && <p className="quiet-note" role="status">{psfDiffResult ? 'PSF-fit difference' : 'Normalized difference'} · selected A and B · not a confirmed detection.</p>}
           {diffMode && isSpherexImage && <p className="quiet-note">Preview comparison: wavelength response and PSF vary across exposures. Residuals are not proof of motion.</p>}
           {subtractionIssue && <p className="quiet-note">{subtractionIssue}</p>}
-          <WhatAmISeeing frames={displayedFrames(liveFrames, epochIdx, viewMode, diffMode)} difference={diffMode} />
+          <WhatAmISeeing frames={displayedFrames(visibleFrames, epochIdx, viewMode, diffMode)} difference={diffMode} />
           <div className="control-strip">
             <div className="segmented" role="group" aria-label="Viewport Mode">
               <button
                 type="button"
-                disabled={spherex && liveFrames.length < 2}
+                disabled={pairFrames.length < 2}
                 title={spherex && liveFrames.length < 2 ? 'Two loaded exposures are needed' : undefined}
                 className={viewMode === 'blink' ? 'active' : ''}
                 aria-pressed={viewMode === 'blink'}
@@ -715,7 +749,7 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
               </button>
               <button
                 type="button"
-                disabled={spherex && liveFrames.length < 2}
+                disabled={pairFrames.length < 2}
                 title={spherex && liveFrames.length < 2 ? 'Two loaded exposures are needed' : undefined}
                 className={viewMode === 'swipe' ? 'active' : ''}
                 aria-pressed={viewMode === 'swipe'}
@@ -725,7 +759,7 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
               </button>
               <button
                 type="button"
-                disabled={spherex && liveFrames.length < 2}
+                disabled={pairFrames.length < 2}
                 title={spherex && liveFrames.length < 2 ? 'Two loaded exposures are needed' : undefined}
                 className={viewMode === 'side-by-side' ? 'active' : ''}
                 aria-pressed={viewMode === 'side-by-side'}
@@ -793,7 +827,7 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
                 {target.name} · {String(target.ra)}°, {String(target.dec)}°
               </span>
               <span className="hud-pill">
-                {spherex ? `${isSpherexImage ? "SPHEREx" : "unWISE"}: ${activeFrameMeta.release || activeFrameMeta.provenance} · ${observationDate(activeFrameMeta.epoch)}` : diffMode
+                {comparing ? `${isSpherexImage ? 'SPHEREx' : 'unWISE'} · selected Image A / Image B` : spherex ? `${isSpherexImage ? "SPHEREx" : "unWISE"}: ${activeFrameMeta.release || activeFrameMeta.provenance} · ${observationDate(activeFrameMeta.epoch)}` : diffMode
                   ? psfDiffResult
                     ? `Fitted difference · heuristic score ${psfDiffResult.meta.diffConfidence.toFixed(2)} (not a probability)`
                     : `Local Variance Δ (${target.epochs[0]} − ${target.epochs[target.epochs.length - 1]})`
@@ -803,13 +837,15 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
               </span>
             </div>
 
+            {isSpherexImage && !liveFrames.length && <div className="image-load-state" role="status"><strong>{imageStatus === 'error' ? 'No usable SPHEREx image loaded' : 'Retrieving SPHEREx observations…'}</strong><span>{imageStatus === 'error' ? 'Use Retry images above to try the archive again.' : 'The first valid exposure will appear as soon as it arrives.'}</span></div>}
+
             <canvas
               ref={canvasPrimaryRef}
               width={512}
               height={512}
               onClick={handleCanvasClick}
-              onPointerMove={event => { if (event.pointerType === 'touch' && !event.buttons) return; const now = performance.now(); if (now - hoverTime.current < 60) return; hoverTime.current = now; handleCanvasClick(event); }}
-              onPointerDown={event => { if (event.pointerType !== 'mouse') event.currentTarget.setPointerCapture(event.pointerId); handleCanvasClick(event); }}
+              onPointerMove={event => { if (event.buttons !== 1) return; const now = performance.now(); if (now - hoverTime.current < 60) return; hoverTime.current = now; handleCanvasClick(event); }}
+              onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); handleCanvasClick(event); }}
               onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
               style={{
                 width: '100%',
@@ -824,8 +860,8 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
                 width={512}
                 height={512}
                 onClick={handleCanvasClick}
-              onPointerMove={event => { if (event.pointerType === 'touch' && !event.buttons) return; const now = performance.now(); if (now - hoverTime.current < 60) return; hoverTime.current = now; handleCanvasClick(event); }}
-              onPointerDown={event => { if (event.pointerType !== 'mouse') event.currentTarget.setPointerCapture(event.pointerId); handleCanvasClick(event); }}
+              onPointerMove={event => { if (event.buttons !== 1) return; const now = performance.now(); if (now - hoverTime.current < 60) return; hoverTime.current = now; handleCanvasClick(event); }}
+              onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); handleCanvasClick(event); }}
               onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
                 style={{
                   width: '100%',
@@ -1043,42 +1079,29 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
               <span>Scene settings</span>
             </Link>
           </div>
+          <div className="explorer-details-grid" aria-label="Notes and image information">
+            {isSpherexImage && investigation && <section id="field-explanation" className="science-details investigation-brief"><h2>Did the field fade?</h2>
+              <p className="quiet-note">19 Mar → 4 May 2026 · same infrared field</p>
+              {liveFrames.length === 2 && imageStatus === 'ready' && !subtractionIssue ? <>
+                <p>Median field brightness fell from <strong>{investigation.inputs[0].field_median_mjy_sr.toFixed(3)} to {investigation.inputs[1].field_median_mjy_sr.toFixed(3)} MJy/sr</strong>. Most of the difference is consistent with changing zodiacal light—sunlight scattered by Solar System dust—rather than evidence that stars faded.</p>
+              </> : <p role="status">Load both exact exposures before drawing a conclusion. The recorded verification is available below.</p>}
+              <section aria-label="Motion walkthrough"><h3>Check for motion</h3><ul>
+                <li><strong>Blink:</strong> look for a point shifting relative to nearby sources.</li>
+                <li><strong>Swipe:</strong> check whether the same point lines up across the divider.</li>
+                <li><strong>Difference:</strong> inspect bright/dark pairs; alignment and PSF changes can mimic motion.</li>
+              </ul></section>
+              <p className="quiet-note">No motion established. Save what you noticed and another possible explanation.</p>
+              <a className="text-link" href={investigationEvidenceUrl} download="spherex-investigation.json">Download recorded evidence ↗</a>
+            </section>}
+            <details id="record-finding" className="science-details"><summary>Record a conclusion<span>JOURNAL</span></summary><label className="reflection-field">What did you notice?<textarea rows={2} maxLength={1200} value={finding} onChange={event => setFinding(event.target.value)} /></label><label className="reflection-field">What else could explain it?<textarea rows={2} maxLength={1200} placeholder="Noise, wavelength response, processing, missing coverage…" value={alternatives} onChange={event => setAlternatives(event.target.value)} /></label><p className="quiet-note">Use Save above to keep your conclusion and the displayed inputs. Evidence may be inconclusive.</p></details>
+            {spherex && <details className="console-data-guide"><summary>Data sources & interpretation</summary><p className="quiet-note">Images and metadata follow the selected survey at the same sky coordinates. Survey dates, resolution and bands differ; do not treat switching surveys as a time comparison. The SPHEREx graph shows measured native-pixel channels with statistical errors. No chemical fit is performed. <a href="https://irsa.ipac.caltech.edu/Missions/spherex.html" target="_blank" rel="noreferrer">SPHEREx archive ↗</a></p></details>}
+            {spherex && <details className="science-details"><summary>Image source</summary><DataNotice spherex={isSpherexImage} spectrumKind={isSpherexImage ? 'measured' : 'unavailable'} frames={visibleFrames} activeIndex={epochIdx} mode={viewMode} difference={diffMode} target={target} colormap={colormap} stretch={stretch} status={imageStatus} error={imageError} onRetry={retry} /></details>}
+            <details className="science-details"><summary>Technical details<span>COORDINATES &amp; METADATA</span></summary><dl className="metadata-grid"><dt>Position</dt><dd>{sampleCoords.ra.toFixed(4)}°, {sampleCoords.dec.toFixed(4)}°</dd><dt>Observed</dt><dd>{observationDate(activeFrameMeta.epoch)}</dd><dt>Source</dt><dd>{activeFrameMeta.provenance || 'Not loaded'}</dd><dt>Release</dt><dd>{activeFrameMeta.release || 'Not loaded'}</dd><dt>Band</dt><dd>{activeFrameMeta.spectralRange || (activeFrameMeta.wavelengthUm ? `${activeFrameMeta.wavelengthUm} µm` : 'Unavailable')}</dd><dt>Units</dt><dd>{activeFrameMeta.bunit || 'Unavailable'}</dd><dt>Display grid</dt><dd>{activeFrameMeta.gridWidth || activeFrameMeta.width} × {activeFrameMeta.gridHeight || activeFrameMeta.height}</dd></dl></details>
+          </div>
         </section>
 
         {/* Right: Simulated spectrum Profiler & Metadata */}
-        <section className="sed-pane"><div className="console-section-label"><span>02 / SPECTRUM</span><span>WAVELENGTH & SIGNAL</span></div>
-          {<div className="panel-box spectrum-panel" id="spectrum">
-            <div className="panel-header">
-              <span className="panel-title">Simulated spectrum · arbitrary units</span>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  type="button"
-                  className={`btn-compact ${showLines ? 'active' : ''}`}
-                  onClick={() => setShowLines((s) => !s)}
-                >
-                  Markers
-                </button>
-                <button type="button" className="btn-compact" onClick={handleExportCsv}>
-                  <Download size={12} /> CSV
-                </button>
-                <button type="button" className="btn-compact" onClick={handleExportJson}>
-                  <Download size={12} /> JSON
-                </button>
-              </div>
-            </div>
-
-            <p className="quiet-note">Teaching model · markers are references, not detections.</p>
-            {<SpectrumChart
-              bands={activeBands}
-              wiseBands={fallbackSpectrum.wiseBands}
-              inSpherexFootprint={true}
-              activeWavelength={activeWavelength}
-              onSelectWavelength={setActiveWavelength}
-              showLines={showLines}
-            />}
-          </div>}
-
-
+        <section className="sed-pane">
           <details id="explore-sky-map" className="science-details" open={mapOpen} onToggle={event => onMapOpenChange(event.currentTarget.open)}><summary>Sky map<span>SELECT POSITION</span></summary>
           {<MocRadar
             currentRa={target.ra}
@@ -1127,9 +1150,18 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
           />}
           </details>
 
+          <details className="science-details" id="spectrum" open={spectrumOpen} onToggle={event => { setSpectrumOpen(event.currentTarget.open); if (!event.currentTarget.open) setChannelsLoading(false); }}><summary>Inspect infrared channels<span>OPTIONAL</span></summary>
+          {(!spherex || spectrumOpen) && <div className="panel-box spectrum-panel">
+            {spherex ? isSpherexImage ? <MeasuredSpectrum embedded ra={channelPosition.ra} dec={channelPosition.dec} imageWavelength={channelPosition.wavelength} requestDelay={channelPosition.delay || 0} onMeasureCursor={() => setChannelPosition({...sampleCoords})} onLoadingChange={setChannelsLoading} /> : <div className="inspect-channels-callout"><h2>Measured infrared channels</h2><p className="quiet-note">Select SPHEREx to study real measurements at these coordinates.</p><button type="button" className="inspect-channels-button" onClick={() => setImageSource('spherex')}>View SPHEREx channels ↗</button></div> : <>
+              <div className="panel-header"><span className="panel-title">Simulated spectrum · arbitrary units</span><div style={{display:'flex',gap:6}}><button type="button" className={`btn-compact ${showLines ? 'active' : ''}`} onClick={() => setShowLines(value => !value)}>Markers</button><button type="button" className="btn-compact" onClick={handleExportCsv}><Download size={12} /> CSV</button><button type="button" className="btn-compact" onClick={handleExportJson}><Download size={12} /> JSON</button></div></div>
+              <p className="quiet-note">Teaching model · markers are references, not detections.</p>
+              <SpectrumChart bands={activeBands} wiseBands={fallbackSpectrum.wiseBands} inSpherexFootprint activeWavelength={activeWavelength} onSelectWavelength={setActiveWavelength} showLines={showLines} />
+            </>}
+          </div>}
+          </details>
 
-          {spherex && <details className="science-details"><summary>Cursor values<span>POSITION &amp; BRIGHTNESS</span></summary><div className="panel-box cursor-panel"><div className="panel-header"><span className="panel-title">Cursor readout</span><span className="mono">{crosshair.x}, {crosshair.y} px</span></div><dl className="metadata-grid"><dt>Image value</dt><dd>{(() => { const frame = liveFrames[epochIdx % Math.max(1, liveFrames.length)]; const value = frame?.buffer[crosshair.y * 512 + crosshair.x]; return Number.isFinite(value) ? `${value.toPrecision(5)} ${frame.meta.bunit}` : 'No coverage'; })()}</dd><dt>Wavelength</dt><dd>{activeFrameMeta.wavelengthUm ? `${activeFrameMeta.wavelengthUm} µm` : 'Unavailable'}</dd><dt>Sky position</dt><dd>{sampleCoords.ra.toFixed(5)}°, {sampleCoords.dec.toFixed(5)}°</dd></dl><details className="cursor-help"><summary>How to read this</summary><p className="quiet-note">Image values are interpolated brightness. The spectrum is a separate teaching model, not chemical measurements. Uncertainties are not propagated into this preview.</p><Link className="text-link" to="/experiments?lab=spectrum">Learn to read a spectrum ↗</Link><p><a className="text-link" href="https://irsa.ipac.caltech.edu/onlinehelp/spherex/spherex/sp.html" target="_blank" rel="noreferrer">IRSA spectrophotometry ↗</a></p></details></div></details>}
-          {<details className="science-details"><summary>Spectrum controls<span>APERTURE &amp; WAVELENGTH</span></summary><div className="panel-box">
+
+          {!spherex && <details className="science-details"><summary>Spectrum controls<span>APERTURE &amp; WAVELENGTH</span></summary><div className="panel-box">
             <div className="panel-header">
               <span className="panel-title">Aperture &amp; Wavelength Controls</span>
               <span className="mono" style={{ fontSize: 11, color: '#8698ad' }}>
@@ -1187,24 +1219,6 @@ function ExplorerSession({ spherex, mapOpen, onMapOpenChange, onMapSelect }) {
           </div>
 
           </details>}
-      <details className="science-details"><summary>Record a conclusion<span>JOURNAL</span></summary><label className="reflection-field">What did you notice?<textarea rows={2} maxLength={1200} value={finding} onChange={event => setFinding(event.target.value)} /></label><label className="reflection-field">What else could explain it?<textarea rows={2} maxLength={1200} placeholder="Noise, wavelength response, processing, missing coverage…" value={alternatives} onChange={event => setAlternatives(event.target.value)} /></label><p className="quiet-note">Use Save above to keep your conclusion and the displayed inputs. Evidence may be inconclusive.</p></details>
-      {spherex && <details className="console-data-guide"><summary>Data sources & interpretation</summary><p className="quiet-note">Images and metadata follow the selected survey at the same sky coordinates. Survey dates, resolution and bands differ; do not treat switching surveys as a time comparison. Spectrum: teaching model, not chemical detections. <a href="https://irsa.ipac.caltech.edu/Missions/spherex.html" target="_blank" rel="noreferrer">SPHEREx archive ↗</a></p></details>}
-      {spherex && <details className="science-details"><summary>Image source</summary><DataNotice spherex={isSpherexImage} spectrumKind="simulated" frames={liveFrames} activeIndex={epochIdx} mode={viewMode} difference={diffMode} target={target} colormap={colormap} stretch={stretch} status={imageStatus} error={imageError} onRetry={retry} /></details>}
-          <details className="science-details"><summary>Technical details<span>COORDINATES &amp; METADATA</span></summary><div className="panel-box">
-            <div className="panel-header">
-              <span className="panel-title">{isSpherexImage ? "SPHEREx image metadata" : "Image metadata"}</span>
-              <span className="mono" style={{ fontSize: 11, color: '#8cbaa8' }}>
-                {liveFrames.length > 0 ? `${activeFrameMeta.width}×${activeFrameMeta.height} context display pixels` : '512×512 TAN'}
-              </span>
-            </div>
-            <div className="mono" style={{ fontSize: 12, display: 'grid', gap: 6, color: '#a7b5c6' }}>
-              <div>ICRS: {target.hmsDms}</div>
-              <div>Sampled: {sampleCoords.ra.toFixed(4)}°, {sampleCoords.dec.toFixed(4)}°</div>
-              <div>Motion: {target.properMotion}</div>
-              {spherex ? <><div>Observed: {observationDate(activeFrameMeta.epoch)}</div><div>Source: {activeFrameMeta?.provenance || 'Not loaded'}</div><div>Release: {activeFrameMeta?.release || 'Not loaded'}</div><div>Detector range: {activeFrameMeta?.spectralRange || 'Not loaded'}</div><div>Pixel units: {activeFrameMeta?.bunit || 'Not loaded'}</div></> : <div>Notes: {target.spectralNote}</div>}
-            </div>
-          </div>
-          </details>
         </section>
       </div>
 

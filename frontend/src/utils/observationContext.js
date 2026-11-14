@@ -7,6 +7,16 @@ export function displayedFrames(frames, activeIndex = 0, mode = 'static', differ
   return [frames[index]];
 }
 
+export function comparisonPair(frames, aId, bId) {
+  const identity = frame => frame.meta?.sourceUrl || frame.cache_key;
+  const unique = [...new Map(frames.filter(frame => identity(frame)).map(frame => [identity(frame), frame])).values()];
+  if (unique.length < 2) return unique;
+  const a = unique.find(frame => identity(frame) === aId) || unique[0];
+  const alternatives = unique.filter(frame => identity(frame) !== identity(a));
+  const b = alternatives.find(frame => identity(frame) === bId) || alternatives.at(-1);
+  return [a, b];
+}
+
 export function sourceLink(value) {
   try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : null; } catch { return null; }
 }
