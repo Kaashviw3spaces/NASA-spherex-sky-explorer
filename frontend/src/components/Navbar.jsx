@@ -24,7 +24,6 @@ export default function Navbar() {
               <Link to="/missions" onClick={closeMenu}>Discovery missions <ArrowUpRight size={14} /></Link>
               <Link to="/experiments" onClick={closeMenu}>Science experiments <ArrowUpRight size={14} /></Link>
               <Link to="/targets" onClick={closeMenu}>Suggested targets <ArrowUpRight size={14} /></Link>
-              <Link to="/legacy-explorer" onClick={closeMenu}>unWISE / demo explorer <ArrowUpRight size={14} /></Link>
               <Link to="/scene" onClick={closeMenu}>Scene studio <ArrowUpRight size={14} /></Link>
               <Link to="/architecture" onClick={closeMenu}>How it works <ArrowUpRight size={14} /></Link>
             </div>

@@ -129,3 +129,34 @@ def test_sampling_distinguishes_archive_failure_from_rejected_measurements(monke
     assert result['samples'] == []
     assert result['attempted'] == result['rejected'] == 1
     assert result['unavailable'] == 0
+
+
+def test_progressive_samples_arrive_before_slowest_download(monkeypatch):
+    import asyncio
+    import spherex_archive as archive
+    async def scenario():
+        release = asyncio.Event()
+        calls = []
+        async def discover(*args):
+            return [{'url': name, 'minUm': i, 'mjd': i, 'date': '2025-08-15'} for i,name in enumerate(['fast','slow'])]
+        async def download(url,*args):
+            calls.append(url)
+            if url == 'slow':
+                await release.wait()
+            return b'fixture'
+        monkeypatch.setattr(archive,'discover',discover)
+        monkeypatch.setattr(archive,'download_fits',download)
+        monkeypatch.setattr(archive,'extract_sample',lambda *args: {'wavelength':2.,'flux':1.,'sigma':.1,'bandwidth':.05,'unit':'MJy/sr'})
+        updates=archive.spectral_sample_updates(2.123,3.234)
+        assert not (await anext(updates))['complete']
+        partial=await anext(updates)
+        assert len(partial['samples']) == 1
+        assert not partial['complete'] and not release.is_set()
+        release.set()
+        final=await anext(updates)
+        assert final['complete'] and len(final['samples']) == 2
+        await updates.aclose()
+        cached=[v async for v in archive.spectral_sample_updates(2.123,3.234)]
+        assert len(cached)==1 and cached[0]['complete']
+        assert len(calls)==2
+    asyncio.run(scenario())

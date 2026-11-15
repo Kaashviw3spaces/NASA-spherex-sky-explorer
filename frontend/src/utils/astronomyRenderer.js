@@ -79,31 +79,21 @@ export function applyBandpassModulation(
 }
 
 export function computeDifferenceBuffer(bufA, bufB) {
-  const n = bufA.length;
-  let meanA = 0;
-  let meanB = 0;
-  for (let i = 0; i < n; i++) {
-    meanA += bufA[i];
-    meanB += bufB[i];
+  if (bufA.length !== bufB.length) throw Error('Difference dimensions must match.');
+  const valid = [];
+  let meanA = 0, meanB = 0;
+  for (let i = 0; i < bufA.length; i++) {
+    if (!Number.isFinite(bufA[i]) || !Number.isFinite(bufB[i])) continue;
+    valid.push(i); meanA += bufA[i]; meanB += bufB[i];
   }
-  meanA /= n;
-  meanB /= n;
-
-  let varA = 0;
-  let varB = 0;
-  for (let i = 0; i < n; i++) {
-    varA += (bufA[i] - meanA) ** 2;
-    varB += (bufB[i] - meanB) ** 2;
-  }
-  const stdA = Math.sqrt(varA / n) || 1;
-  const stdB = Math.sqrt(varB / n) || 1;
-
-  const diff = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const zA = (bufA[i] - meanA) / stdA;
-    const zB = (bufB[i] - meanB) / stdB;
-    diff[i] = 1.2 + (zA - zB) * 0.32;
-  }
+  const diff = new Float32Array(bufA.length).fill(NaN);
+  if (!valid.length) return diff;
+  meanA /= valid.length; meanB /= valid.length;
+  let varA = 0, varB = 0;
+  for (const i of valid) { varA += (bufA[i] - meanA) ** 2; varB += (bufB[i] - meanB) ** 2; }
+  const stdA = Math.sqrt(varA / valid.length) || 1;
+  const stdB = Math.sqrt(varB / valid.length) || 1;
+  for (const i of valid) diff[i] = 1.2 + ((bufA[i] - meanA) / stdA - (bufB[i] - meanB) / stdB) * .32;
   return diff;
 }
 

@@ -277,3 +277,33 @@ if __name__ == "__main__":
     import pytest
 
     sys.exit(pytest.main(["-v", __file__]))
+
+
+def test_spherex_previews_support_existing_psf_subtraction(monkeypatch):
+    import main
+    async def preview(*args):
+        pixels = np.ones((16,16)).tolist()
+        pixels[1][1] = None
+        return {'pixels': pixels, 'width': 16, 'height': 16, 'unit': 'MJy / sr', 'qualityApplied': True, 'spectral': [[[2., .05] for _ in range(16)] for _ in range(16)]}
+    monkeypatch.setattr(main, 'spherex_cutout', preview)
+    monkeypatch.setattr(main, 'psf_matched_diff', lambda a, b, kernel: (b-a, .5))
+    with TestClient(app) as client:
+        keys = []
+        for filename in ['firstD3_spx.fits', 'secondD3_spx.fits', 'thirdD2_spx.fits']:
+            response = client.get('/api/spherex/cutout', params={'url': 'https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/level2/'+filename, 'ra': 10, 'dec': 20})
+            assert response.status_code == 200
+            assert response.json()['pixels'][1][1] is None
+            keys.append(response.json()['cache_key'])
+        result = client.post('/api/diff', json={'raster_key_a': keys[0], 'raster_key_b': keys[1]})
+        assert result.status_code == 200
+        assert len(result.content) == 512 * 512 * 2
+        mismatch = client.post('/api/diff', json={'raster_key_a': keys[0], 'raster_key_b': keys[2]})
+        assert mismatch.status_code == 400
+        async def mismatched_wave(url, *args):
+            value = await preview(url, *args)
+            if 'second' in url:
+                value['spectral'][0][0] = [2.2, .05]
+            return value
+        monkeypatch.setattr(main, 'spherex_cutout', mismatched_wave)
+        mismatch = client.post('/api/diff', json={'raster_key_a': keys[0], 'raster_key_b': keys[1]})
+        assert mismatch.status_code == 400

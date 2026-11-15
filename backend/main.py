@@ -10,7 +10,7 @@ from astropy.wcs import WCS
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from cache import BoundedLRUCache, JobStore
@@ -311,18 +311,41 @@ async def compute_diff(req: DiffRequest):
 
     bytes_a, hdr_a = entry_a
     bytes_b, hdr_b = entry_b
-    if any(hdr_a.get(field) != hdr_b.get(field) for field in ("X-BUNIT", "X-Band-Index", "X-Data-Kind")):
+    if any(hdr_a.get(field) != hdr_b.get(field) for field in ("X-BUNIT", "X-Band-Index", "X-Data-Kind", "X-SPHEREx-Detector")):
         raise HTTPException(status_code=400, detail="Difference inputs must share units, band and observed/simulated kind.")
     w_a, h_a = (int(x) for x in hdr_a["X-Raster-Dimensions"].split(","))
     w_b, h_b = (int(x) for x in hdr_b["X-Raster-Dimensions"].split(","))
     if (w_a, h_a) != (w_b, h_b):
         raise HTTPException(status_code=400, detail="Raster dimensions must match for differencing.")
+    if hdr_a.get('X-SPHEREx-Detector') is not None:
+        checks = []
+        for header in (hdr_a, hdr_b):
+            center_ra, center_dec = map(float, header['X-WCS-CRVAL'].split(','))
+            fov = abs(float(header['X-WCS-CDELT'].split(',')[0])) * w_a * 60
+            checks.append(await spherex_cutout(header['X-Source-URL'], center_ra, center_dec, fov))
+        a, b = checks
+        if not all(v.get('qualityApplied') and v.get('spectral') for v in checks):
+            raise HTTPException(status_code=400, detail='SPHEREx pixel wavelengths and quality must be verified before subtraction.')
+        sa, sb = np.asarray(a['spectral'], dtype=float), np.asarray(b['spectral'], dtype=float)
+        pa, pb = np.asarray(a['pixels'], dtype=float), np.asarray(b['pixels'], dtype=float)
+        overlap = np.isfinite(pa) & np.isfinite(pb)
+        if sa.shape != sb.shape or overlap.sum() < 64:
+            raise HTTPException(status_code=400, detail='Insufficient comparable sky coverage.')
+        tolerance = .1 * np.minimum(sa[..., 1], sb[..., 1])
+        valid = np.isfinite(sa).all(axis=-1) & np.isfinite(sb).all(axis=-1) & (tolerance > 0) & (np.abs(sa[...,0]-sb[...,0]) <= tolerance) & (np.abs(sa[...,1]-sb[...,1]) <= tolerance)
+        if not valid[overlap].all():
+            raise HTTPException(status_code=400, detail='SPHEREx pixel bandpasses differ; use visual comparison instead.')
 
     w, h = w_a, h_a
     img_a = dequantize_uint16(bytes_a, (h, w), float(hdr_a["X-BSCALE"]), float(hdr_a["X-BZERO"]))
     img_b = dequantize_uint16(bytes_b, (h, w), float(hdr_b["X-BSCALE"]), float(hdr_b["X-BZERO"]))
-    img_a = np.nan_to_num(img_a, nan=0.0)
-    img_b = np.nan_to_num(img_b, nan=0.0)
+    if hdr_a.get('X-SPHEREx-Detector') is not None:
+        from scipy.ndimage import map_coordinates
+        yy, xx = np.mgrid[:h, :w]
+        coords = [yy * (pa.shape[0]-1)/(h-1), xx * (pa.shape[1]-1)/(w-1)]
+        common = map_coordinates(overlap.astype(float), coords, order=1) > .999
+        img_a[~common] = np.nan
+        img_b[~common] = np.nan
 
     diff_img, confidence = await asyncio.to_thread(psf_matched_diff, img_a, img_b, req.kernel)
     diff_img = np.nan_to_num(diff_img, nan=0.0)
@@ -420,15 +443,44 @@ async def spherex_images(ra: float = Query(..., ge=0, le=360), dec: float = Quer
 @app.get('/api/spherex/cutout')
 async def real_spherex_cutout(url: str, ra: float = Query(..., ge=0, le=360), dec: float = Query(..., ge=-90, le=90), fov: float = Query(5, ge=1, le=10)):
     try:
-        return await spherex_cutout(url, ra, dec, fov)
+        image = await spherex_cutout(url, ra, dec, fov)
+        key = raster_cache.make_key('spherex-display', url, ra, dec, fov)
+        if not raster_cache.has(key):
+            from scipy.ndimage import map_coordinates
+            native = np.array([[np.nan if value is None else value for value in row] for row in image['pixels']], dtype=float)
+            yy, xx = np.mgrid[:512, :512]
+            coords = [yy * (image['height'] - 1) / 511, xx * (image['width'] - 1) / 511]
+            support = map_coordinates(np.isfinite(native).astype(float), coords, order=1)
+            display = map_coordinates(np.nan_to_num(native), coords, order=1)
+            valid_support = support > 0.05
+            display = np.where(valid_support, display / np.maximum(support, 1e-6), np.nan)
+            raw, scale, zero = quantize_to_uint16(display)
+            headers = build_wcs_headers(width=512, height=512, bscale=scale, bzero=zero, ra=ra, dec=dec,
+                pixel_scale_arcsec=fov * 60 / 512, epoch='unknown', provenance='SPHEREx-DR1-preview',
+                band_index=0, wavelength_um=0, is_reprojected=True)
+            detector = re.search(r'D([1-6])_spx', url)
+            headers.update({'X-BUNIT': image['unit'], 'X-Data-Kind': 'observed', 'X-Source-Release': 'DR1',
+                'X-Source-URL': url, 'X-SPHEREx-Detector': detector.group(1) if detector else 'unknown'})
+            raster_cache.put(key, raw, headers)
+        return {**image, 'cache_key': key}
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail='SPHEREx cutout unavailable; no simulated replacement was generated.') from exc
 
 @app.get('/api/spherex/spectral-samples')
-async def real_spectral_samples(ra: float = Query(..., ge=0, le=360), dec: float = Query(..., ge=-90, le=90)):
+async def real_spectral_samples(ra: float = Query(..., ge=0, le=360), dec: float = Query(..., ge=-90, le=90), stream: bool = False):
     from spherex_archive import spectral_samples
+    if stream:
+        import json
+        from spherex_archive import spectral_sample_updates
+        async def events():
+            try:
+                async for update in spectral_sample_updates(ra, dec):
+                    yield 'data: ' + json.dumps(update, allow_nan=False) + '\n\n'
+            except Exception:
+                yield 'data: ' + json.dumps({'error': 'Measured spectral samples could not be retrieved from IRSA. Please retry.'}) + '\n\n'
+        return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
     try:
         return await spectral_samples(ra, dec)
     except Exception as exc:

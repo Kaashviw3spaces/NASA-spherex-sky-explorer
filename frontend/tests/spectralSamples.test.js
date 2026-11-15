@@ -36,3 +36,20 @@ test('failed retrieval and cancelled responses are not cached as measurements', 
   assert.equal((await fetchSpectralSamples(19, 20)).samples.length, 1);
   assert.equal(calls, 1);
 });
+test('progressive channels survive chunk boundaries and cache only completed results', async t => {
+  const encoder = new TextEncoder();
+  const messages = `data: ${JSON.stringify({...result,complete:false})}\n\ndata: ${JSON.stringify({...result,complete:true})}\n\n`;
+  let calls=0;
+  t.mock.method(globalThis,'fetch',async()=>{calls++;return new Response(new ReadableStream({start(c){c.enqueue(encoder.encode(messages.slice(0,31)));c.enqueue(encoder.encode(messages.slice(31)));c.close();}}),{headers:{'Content-Type':'text/event-stream'}});});
+  const progress=[];
+  await fetchSpectralSamples(21,20,undefined,false,r=>progress.push(r.complete));
+  assert.deepEqual(progress,[false,true]);
+  await fetchSpectralSamples(21,20);
+  assert.equal(calls,1);
+});
+test('interrupted streams are not cached as complete', async t => {
+  let calls=0;
+  t.mock.method(globalThis,'fetch',async()=>{calls++;return new Response(`data: ${JSON.stringify({...result,complete:false})}\n\n`,{headers:{'Content-Type':'text/event-stream'}});});
+  for(let i=0;i<2;i++) await assert.rejects(fetchSpectralSamples(22,20,undefined,false,()=>{}),/interrupted/);
+  assert.equal(calls,2);
+});
