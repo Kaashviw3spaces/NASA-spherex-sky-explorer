@@ -14,7 +14,7 @@
 
 <sub>AI-assisted mission illustration based on NASA/JPL-Caltech reference artwork · not telescope data · <a href="frontend/public/images/CREDITS.md">Image credits</a></sub>
 
-**[Get started](#run-locally) · [Architecture](#architecture) · [Data sources](#understand-the-data-first) · [Deploy](#production-deployment) · [Tests](#tests-and-verification)**
+**[Open the live project](https://classroom-flexibility-after-curious.trycloudflare.com/) · [Get started](#run-locally) · [Architecture](#architecture) · [Data sources](#understand-the-data-first) · [Deploy](#production-deployment) · [Tests](#tests-and-verification)**
 
 ![Astronomy](https://img.shields.io/badge/astronomy-132638?style=flat-square&labelColor=132638&color=132638)
 ![Infrared](https://img.shields.io/badge/infrared-D8B26E?style=flat-square&labelColor=132638)
@@ -331,6 +331,10 @@ Example pointing links:
 
 ## 🚀 Production deployment
 
+Current public demo: **[classroom-flexibility-after-curious.trycloudflare.com](https://classroom-flexibility-after-curious.trycloudflare.com/)**
+
+This `trycloudflare.com` address is a temporary tunnel and works only while its Oracle VM origin, Uvicorn backend, frontend server, and tunnel are running.
+
 ```bash
 docker compose up --build -d
 docker compose ps
@@ -349,7 +353,7 @@ flowchart LR
     Backend --> Archives[IRSA / unWISE / CDS]
 ```
 
-Configure HTTPS and service sizing on your hosting platform. Raster caches are disposable; jobs and archive caches are process-local. For multiple backend replicas, a shared job/cache design would be needed. Public archive latency and rate limits remain external dependencies.
+Configure HTTPS and service sizing on your hosting platform. Successful archive responses persist under `SPHEREX_CACHE_DIR`; the Compose setup stores them in the `spherex-cache` volume. Jobs remain process-local. Multiple backend replicas require shared job storage and a shared or replicated cache. Public archive latency and rate limits remain external dependencies.
 
 The Vercel SPA configuration alone does not deploy the Python backend or its API proxy; the combined Compose deployment is the complete included setup.
 
